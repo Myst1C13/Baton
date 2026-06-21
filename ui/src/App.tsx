@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { demoEvents, demoPacket } from "./demo";
 import { useRelayStream } from "./useRelayStream";
 import {
@@ -88,13 +88,33 @@ const codexLines: Line[] = [
   { kind: "pass", value: "✔ all checks passed" },
 ];
 
-function Terminal({ lines, phase }: { lines: Line[]; phase: Phase }) {
+function Terminal({
+  lines,
+  phase,
+  interactive = false,
+  onInput,
+}: {
+  lines: Line[];
+  phase: Phase;
+  interactive?: boolean;
+  onInput?: (text: string) => void;
+}) {
   const bodyRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [draft, setDraft] = useState("");
 
   useEffect(() => {
     const el = bodyRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [lines]);
+  }, [lines, interactive]);
+
+  function submit(event: FormEvent): void {
+    event.preventDefault();
+    const text = draft.trim();
+    if (!text || !onInput) return;
+    onInput(text);
+    setDraft("");
+  }
 
   return (
     <section className="terminal" aria-label="Live terminal">
@@ -107,13 +127,32 @@ function Terminal({ lines, phase }: { lines: Line[]; phase: Phase }) {
         <span className="terminal-title">relay — zsh</span>
         <span className="terminal-branch">relay session</span>
       </header>
-      <div className="terminal-body" ref={bodyRef}>
+      <div
+        className="terminal-body"
+        ref={bodyRef}
+        onClick={() => inputRef.current?.focus()}
+      >
         {lines.map((line, i) => (
           <div className={`line ${line.kind}`} key={i}>
             {line.value || " "}
           </div>
         ))}
-        {phase !== "switching" && <span className="cursor" />}
+        {interactive ? (
+          <form className="term-input" onSubmit={submit}>
+            <span className="term-caret">$</span>
+            <input
+              ref={inputRef}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder="type to message the active agent…"
+              spellCheck={false}
+              autoComplete="off"
+              autoFocus
+            />
+          </form>
+        ) : (
+          phase !== "switching" && <span className="cursor" />
+        )}
       </div>
     </section>
   );
@@ -324,7 +363,6 @@ export function App() {
   const [verificationCommand, setVerificationCommand] = useState("npm test");
   const [workspaceDir, setWorkspaceDir] = useState("demo-repo");
   const [prompt, setPrompt] = useState("Fix the migration bug. Run the tests.");
-  const [inputText, setInputText] = useState("");
   const [initialAgent, setInitialAgent] = useState<AgentId>("claude");
   const [claudeModel, setClaudeModel] = useState("claude-sonnet-4-6");
   const [codexModel, setCodexModel] = useState("gpt-5-codex");
@@ -398,7 +436,6 @@ export function App() {
         body: body ? JSON.stringify(body) : "{}",
       });
       setControlMessage(action);
-      if (action === "input") setInputText("");
     });
   }
 
@@ -471,6 +508,28 @@ export function App() {
               rows={2}
             />
           </label>
+          <label className="field">
+            <span>Workspace</span>
+            <input
+              value={workspaceDir}
+              onChange={(event) => setWorkspaceDir(event.target.value)}
+              disabled={pendingAction !== null}
+              placeholder="path the agents work in"
+            />
+          </label>
+          <div className="chips" role="group" aria-label="Workspace presets">
+            {["demo-repo", "."].map((preset) => (
+              <button
+                type="button"
+                key={preset}
+                className={`chip ${workspaceDir === preset ? "active" : ""}`}
+                onClick={() => setWorkspaceDir(preset)}
+                disabled={pendingAction !== null}
+              >
+                {preset === "." ? "repo root" : preset}
+              </button>
+            ))}
+          </div>
           <label className="field compact">
             <span>Start with</span>
             <select
@@ -499,14 +558,6 @@ export function App() {
           <details className="advanced">
             <summary>Advanced</summary>
             <div className="advanced-fields">
-              <label className="field">
-                <span>Workspace</span>
-                <input
-                  value={workspaceDir}
-                  onChange={(event) => setWorkspaceDir(event.target.value)}
-                  disabled={pendingAction !== null}
-                />
-              </label>
               <label className="field">
                 <span>Verification</span>
                 <input
@@ -568,30 +619,6 @@ export function App() {
               Verify
             </button>
           </div>
-          <details className="advanced">
-            <summary>Send input</summary>
-            <div className="advanced-fields">
-              <div className="input-row">
-                <input
-                  value={inputText}
-                  placeholder="Message the active agent"
-                  onChange={(event) => setInputText(event.target.value)}
-                  disabled={pendingAction !== null}
-                />
-                <button
-                  className="action"
-                  onClick={() =>
-                    sessionAction("input", "/input", { data: `${inputText}\n` })
-                  }
-                  disabled={
-                    pendingAction !== null || inputText.trim().length === 0
-                  }
-                >
-                  Send
-                </button>
-              </div>
-            </div>
-          </details>
         </>
       )}
       {controlMessage && <div className="control-message">{controlMessage}</div>}
@@ -601,7 +628,14 @@ export function App() {
   return (
     <main className="shell">
       <div className="workspace">
-        <Terminal lines={lines} phase={phase} />
+        <Terminal
+          lines={lines}
+          phase={phase}
+          interactive={isLive}
+          onInput={(text) =>
+            sessionAction("input", "/input", { data: `${text}\n` })
+          }
+        />
         <Rail
           phase={phase}
           handoffDone={handoffDone}

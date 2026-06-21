@@ -118,6 +118,26 @@ svg { flex: 0 0 auto; }
 }
 @keyframes blink { 50% { opacity: 0; } }
 
+/* typeable terminal prompt */
+.term-input {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 2px;
+}
+.term-input .term-caret { color: var(--green); }
+.term-input input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  caret-color: var(--green);
+}
+.term-input input::placeholder { color: var(--faint); }
+
 /* ---- rail ----------------------------------------------------------- */
 .rail {
   display: grid;
@@ -244,6 +264,20 @@ svg { flex: 0 0 auto; }
   color: var(--faint);
   background: var(--line-2);
 }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: -3px; }
+.chip {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: var(--bg);
+  color: var(--muted);
+  font: 600 10px/1 var(--mono);
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.chip:hover:not(:disabled) { color: var(--ink); border-color: var(--ring); }
+.chip.active { color: #09090b; background: var(--ink); border-color: var(--ink); }
+.chip:disabled { opacity: 0.5; cursor: default; }
 .action-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
