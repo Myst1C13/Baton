@@ -77,6 +77,13 @@ export interface PacketMeta {
   sourceTokens: number; // the live session's token count (for the metric)
 }
 
+/** Optional runtime overrides for embedding and deterministic tests. */
+export interface DistillOptions {
+  backend?: CompressBackend;
+  model?: string;
+  cwd?: string;
+}
+
 /** What the model is asked to produce — the reasoning subset of the packet. */
 const DistilledClaims = z.object({
   goal: z.string(),
@@ -307,13 +314,15 @@ function buildFallbackPacket(ev: EvidenceBundle, meta: PacketMeta): HandoffPacke
  *  on any failure it returns a deterministic fallback packet. */
 export async function distill(
   evidence: EvidenceBundle,
-  meta: PacketMeta
+  meta: PacketMeta,
+  options: DistillOptions = {}
 ): Promise<HandoffPacket> {
   try {
     const prompt = assemblePrompt(evidence);
-    const raw = await COMPRESS_BACKEND(prompt, {
-      model: COMPRESSOR_MODEL,
-      cwd: WORKSPACE_DIR,
+    const backend = options.backend ?? COMPRESS_BACKEND;
+    const raw = await backend(prompt, {
+      model: options.model ?? COMPRESSOR_MODEL,
+      cwd: options.cwd ?? WORKSPACE_DIR,
     });
     const claims = DistilledClaims.parse(extractJson(raw));
     return buildPacket(claims, evidence, meta);

@@ -1,10 +1,11 @@
 {
-  "name": "aihack",
+  "name": "relay",
   "version": "1.0.0",
-  "description": "",
+  "description": "Provider-neutral AI coding-session handoff engine",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --import tsx --test tests/*.test.ts && node --import tsx test-detection.ts",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [],
   "author": "",

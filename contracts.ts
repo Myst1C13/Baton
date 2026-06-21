@@ -89,12 +89,12 @@ export interface LiveSession {
 export interface LaunchOptions {
   model: string;
   workspace: string;
-  manifestPath?: string; // seed the fresh session with this handoff manifest
+  manifestPath: string; // seed the fresh session with this handoff manifest
 }
 
 export interface ProviderAdapter {
   readonly provider: string;
-  /** Boot a fresh session of this provider, optionally seeded with a manifest. */
+  /** Boot a fresh session of this provider, seeded with a handoff manifest. */
   launch(opts: LaunchOptions): Promise<LiveSession>;
   /** Headless one-shot summarization on this provider (the compression backend). */
   compress: CompressBackend;
