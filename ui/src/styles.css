@@ -161,6 +161,99 @@ svg { flex: 0 0 auto; }
 .check .ok { color: var(--green); background: rgba(18, 138, 91, 0.1); }
 .check .bad { color: var(--red); background: rgba(207, 70, 81, 0.1); }
 
+/* ---- controls ------------------------------------------------------- */
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 2px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.field span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+.field input,
+.field textarea,
+.field select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 9px;
+  background: #fbfbfa;
+  color: var(--ink);
+  font: 12px/1.35 var(--mono);
+  outline: none;
+}
+.field input,
+.field textarea {
+  resize: vertical;
+}
+.field select { appearance: auto; }
+.field input:focus,
+.field textarea:focus,
+.field select:focus {
+  border-color: #b8babf;
+  background: #ffffff;
+}
+.field input:disabled,
+.field textarea:disabled,
+.field select:disabled {
+  color: var(--muted);
+  background: #f5f5f2;
+}
+.action-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+.action {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  background: #ffffff;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.action.primary {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: #ffffff;
+}
+.action:hover:not(:disabled) { border-color: #c7c8cc; background: #fafafa; }
+.action.primary:hover:not(:disabled) { background: #000000; }
+.action:disabled {
+  cursor: default;
+  color: var(--muted);
+  background: #f5f5f2;
+}
+.control-message {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 9px;
+  color: var(--soft);
+  background: #fafafa;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 /* packet — hidden until a handoff happens, then opens */
 .packet {
   max-height: 0;

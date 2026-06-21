@@ -32,6 +32,15 @@ export interface AgentCapabilities {
   readonly supportsResume: boolean;
   /** Models this adapter can run (may be empty). */
   readonly models: readonly string[];
+  /** Provider context window used by the proactive context-pressure trigger. */
+  readonly contextWindow?: number;
+}
+
+export interface AgentUsage {
+  /** Best available tokens currently represented by this run. */
+  readonly tokens: number;
+  /** Model context window for the current provider/model. */
+  readonly window: number;
 }
 
 export interface AgentStartOptions {
@@ -60,6 +69,8 @@ export interface AgentAdapter {
   sendInput(data: string): void;
   /** Current lifecycle status. */
   status(): AgentStatus;
+  /** Best-effort usage meter for proactive context-pressure triggers. */
+  usage(): AgentUsage;
   /** Stop the agent safely. Idempotent. */
   stop(): Promise<void>;
 }
