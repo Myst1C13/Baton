@@ -329,6 +329,7 @@ export class Orchestrator extends EventEmitter {
       handoffPath: this.handoffPath,
       goal: packet.task.goal,
       metrics: packet.metrics,
+      packet,
     });
 
     // 6. LAUNCH — boot the fresh target seeded with the packet.
