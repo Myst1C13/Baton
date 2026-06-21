@@ -568,25 +568,30 @@ export function App() {
               Verify
             </button>
           </div>
-          <div className="input-row">
-            <input
-              value={inputText}
-              placeholder="Send input to the active agent"
-              onChange={(event) => setInputText(event.target.value)}
-              disabled={pendingAction !== null}
-            />
-            <button
-              className="action"
-              onClick={() =>
-                sessionAction("input", "/input", { data: `${inputText}\n` })
-              }
-              disabled={
-                pendingAction !== null || inputText.trim().length === 0
-              }
-            >
-              Send
-            </button>
-          </div>
+          <details className="advanced">
+            <summary>Send input</summary>
+            <div className="advanced-fields">
+              <div className="input-row">
+                <input
+                  value={inputText}
+                  placeholder="Message the active agent"
+                  onChange={(event) => setInputText(event.target.value)}
+                  disabled={pendingAction !== null}
+                />
+                <button
+                  className="action"
+                  onClick={() =>
+                    sessionAction("input", "/input", { data: `${inputText}\n` })
+                  }
+                  disabled={
+                    pendingAction !== null || inputText.trim().length === 0
+                  }
+                >
+                  Send
+                </button>
+              </div>
+            </div>
+          </details>
         </>
       )}
       {controlMessage && <div className="control-message">{controlMessage}</div>}
