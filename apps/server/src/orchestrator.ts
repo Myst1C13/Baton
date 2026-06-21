@@ -120,7 +120,7 @@ export class Orchestrator {
   /** Start Claude on a freshly created session or from a saved handoff. */
   async startClaude(
     sessionId: string,
-    opts: { model?: string; prompt?: string } = {}
+    opts: { model?: string; prompt?: string; apiKey?: string } = {}
   ): Promise<void> {
     await this.startResumableAgent(sessionId, "claude", "claude_running", opts);
   }
@@ -223,7 +223,7 @@ export class Orchestrator {
   /** Start Codex on a freshly created session or from a saved handoff. */
   async startCodex(
     sessionId: string,
-    opts: { model?: string; prompt?: string } = {}
+    opts: { model?: string; prompt?: string; apiKey?: string } = {}
   ): Promise<void> {
     await this.startResumableAgent(sessionId, "codex", "codex_running", opts);
   }
@@ -232,7 +232,7 @@ export class Orchestrator {
     sessionId: string,
     provider: AgentId,
     targetState: "claude_running" | "codex_running",
-    opts: { model?: string; prompt?: string } = {}
+    opts: { model?: string; prompt?: string; apiKey?: string } = {}
   ): Promise<void> {
     const session = this.deps.sessions.get(sessionId);
     const packet = await this.deps.store.loadHandoff(sessionId);
@@ -251,6 +251,7 @@ export class Orchestrator {
       await this.startAgent(sessionId, provider, targetState, {
         model: opts.model,
         prompt: opts.prompt,
+        apiKey: opts.apiKey,
         manifestPath,
       });
     } finally {
@@ -332,7 +333,7 @@ export class Orchestrator {
     sessionId: string,
     provider: AgentId,
     targetState: "claude_running" | "codex_running",
-    opts: { model?: string; prompt?: string; manifestPath?: string }
+    opts: { model?: string; prompt?: string; apiKey?: string; manifestPath?: string }
   ): Promise<void> {
     const session = this.deps.sessions.get(sessionId);
     const startingSession = session.state === "created";
@@ -361,6 +362,7 @@ export class Orchestrator {
           cwd: session.workspaceDir,
           model: opts.model,
           prompt: opts.prompt ?? session.goal,
+          apiKey: opts.apiKey,
           manifestPath: opts.manifestPath,
         },
         this.sink(sessionId)

@@ -51,6 +51,9 @@ export interface AgentStartOptions {
   manifestPath?: string;
   /** Initial instruction / prompt. */
   prompt?: string;
+  /** Provider API key for this run, injected into the spawned CLI's env
+   *  (ANTHROPIC_API_KEY / OPENAI_API_KEY). Never logged or persisted. */
+  apiKey?: string;
 }
 
 /**

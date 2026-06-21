@@ -399,10 +399,12 @@ export function App() {
   const [goal] = useState(demoPacket.task.goal);
   const [verificationCommand, setVerificationCommand] = useState("npm test");
   const [workspaceDir, setWorkspaceDir] = useState("demo-repo");
-  const [prompt, setPrompt] = useState("Fix the migration bug. Run the tests.");
+  const [prompt] = useState("Fix the migration bug. Run the tests.");
   const [initialAgent, setInitialAgent] = useState<AgentId>("claude");
   const [claudeModel, setClaudeModel] = useState("claude-sonnet-4-6");
   const [codexModel, setCodexModel] = useState("gpt-5-codex");
+  const [anthropicKey, setAnthropicKey] = useState("");
+  const [openaiKey, setOpenaiKey] = useState("");
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [controlMessage, setControlMessage] = useState("");
   const isLive = currentSessionId !== null;
@@ -476,6 +478,12 @@ export function App() {
     });
   }
 
+  const apiKeys = { claude: anthropicKey.trim(), codex: openaiKey.trim() };
+  function keyFor(agent: AgentId): string | undefined {
+    const k = agent === "claude" ? apiKeys.claude : apiKeys.codex;
+    return k ? k : undefined;
+  }
+
   async function startNewSession(): Promise<void> {
     await runControl(`start ${initialAgent}`, async () => {
       const sessionId = await createSessionRequest();
@@ -490,6 +498,7 @@ export function App() {
               codex: codexModel,
             }),
             prompt,
+            apiKey: keyFor(initialAgent),
           }),
         }
       );
@@ -506,6 +515,7 @@ export function App() {
         target,
         models: { claude: claudeModel, codex: codexModel },
         prompt,
+        apiKeys,
       });
       setControlMessage(`${target} running`);
     });
@@ -612,6 +622,34 @@ export function App() {
           <details className="advanced">
             <summary>Advanced</summary>
             <div className="advanced-fields">
+              <p className="advanced-note">
+                Provider login — only for the real CLIs. Leave blank to use{" "}
+                <code>claude login</code> / <code>codex login</code> from your
+                terminal. Keys are sent to your local server for the run only —
+                never stored or logged.
+              </p>
+              <label className="field">
+                <span>Anthropic API key</span>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  placeholder="sk-ant-…  (or use claude login)"
+                  value={anthropicKey}
+                  onChange={(event) => setAnthropicKey(event.target.value)}
+                  disabled={pendingAction !== null}
+                />
+              </label>
+              <label className="field">
+                <span>OpenAI API key</span>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  placeholder="sk-…  (or use codex login)"
+                  value={openaiKey}
+                  onChange={(event) => setOpenaiKey(event.target.value)}
+                  disabled={pendingAction !== null}
+                />
+              </label>
               <label className="field">
                 <span>Verification</span>
                 <input
@@ -620,15 +658,6 @@ export function App() {
                     setVerificationCommand(event.target.value)
                   }
                   disabled={pendingAction !== null}
-                />
-              </label>
-              <label className="field">
-                <span>Opening prompt</span>
-                <textarea
-                  value={prompt}
-                  onChange={(event) => setPrompt(event.target.value)}
-                  disabled={pendingAction !== null}
-                  rows={2}
                 />
               </label>
               <label className="field">

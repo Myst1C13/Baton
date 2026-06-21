@@ -76,6 +76,24 @@ export abstract class ProcessAgentAdapter implements AgentAdapter {
     return this.config.executable ?? this.defaultExecutable;
   }
 
+  /**
+   * Build the spawn env. The child inherits `process.env`; a per-run `apiKey`
+   * (from the UI) is mapped to the provider's variable. Returns undefined when
+   * there is nothing to override, so the runner uses the plain inherited env.
+   */
+  protected spawnEnv(opts: AgentStartOptions): NodeJS.ProcessEnv | undefined {
+    const keyVar =
+      this.agent === "claude"
+        ? "ANTHROPIC_API_KEY"
+        : this.agent === "codex"
+          ? "OPENAI_API_KEY"
+          : null;
+    const overrides: NodeJS.ProcessEnv = { ...this.config.env };
+    if (opts.apiKey && keyVar) overrides[keyVar] = opts.apiKey;
+    if (Object.keys(overrides).length === 0) return undefined;
+    return { ...process.env, ...overrides };
+  }
+
   status(): AgentStatus {
     return this.state;
   }
@@ -114,7 +132,7 @@ export abstract class ProcessAgentAdapter implements AgentAdapter {
           args: plan.args,
           cwd: opts.cwd,
           agent: this.agent,
-          env: this.config.env ? { ...process.env, ...this.config.env } : undefined,
+          env: this.spawnEnv(opts),
         },
         sink
       );

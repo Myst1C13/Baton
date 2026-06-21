@@ -385,6 +385,17 @@ svg { flex: 0 0 auto; }
   gap: 10px;
   padding-top: 12px;
 }
+.advanced-note {
+  margin: 0;
+  color: var(--faint);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.advanced-note code {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 9px;
+}
 .input-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

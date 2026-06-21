@@ -61,8 +61,13 @@ export async function switchAgent(
     target: AgentId;
     models: AgentModels;
     prompt: string;
+    apiKeys?: { claude?: string; codex?: string };
   }
 ): Promise<void> {
+  const keyFor = (agent: AgentId): string | undefined => {
+    const k = agent === "claude" ? opts.apiKeys?.claude : opts.apiKeys?.codex;
+    return k && k.trim() ? k.trim() : undefined;
+  };
   const session = await api.requestJson<ApiSession>(
     `/api/sessions/${opts.sessionId}`
   );
@@ -72,6 +77,7 @@ export async function switchAgent(
       body: JSON.stringify({
         model: modelFor(opts.initialAgent, opts.models),
         prompt: opts.prompt,
+        apiKey: keyFor(opts.initialAgent),
       }),
     });
   }
@@ -91,6 +97,7 @@ export async function switchAgent(
     body: JSON.stringify({
       model: modelFor(opts.target, opts.models),
       prompt: opts.prompt,
+      apiKey: keyFor(opts.target),
     }),
   });
 }

@@ -24,7 +24,11 @@ export interface ControlDeps {
 }
 
 const StartBody = z
-  .object({ model: z.string().optional(), prompt: z.string().optional() })
+  .object({
+    model: z.string().optional(),
+    prompt: z.string().optional(),
+    apiKey: z.string().optional(),
+  })
   .default({});
 const InputBody = z.object({ data: z.string().min(1, "data is required") });
 
