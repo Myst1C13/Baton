@@ -396,7 +396,7 @@ export function App() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(config.sessionId);
   const [wsBase] = useState(config.base);
   const [apiBase, setApiBase] = useState(config.api);
-  const [goal, setGoal] = useState(demoPacket.task.goal);
+  const [goal] = useState(demoPacket.task.goal);
   const [verificationCommand, setVerificationCommand] = useState("npm test");
   const [workspaceDir, setWorkspaceDir] = useState("demo-repo");
   const [prompt, setPrompt] = useState("Fix the migration bug. Run the tests.");
@@ -537,15 +537,6 @@ export function App() {
     <div className="controls" aria-label="Session controls">
       {!isLive ? (
         <>
-          <label className="field">
-            <span>Goal</span>
-            <textarea
-              value={goal}
-              onChange={(event) => setGoal(event.target.value)}
-              disabled={pendingAction !== null}
-              rows={2}
-            />
-          </label>
           <label className="field">
             <span>Workspace</span>
             <input
