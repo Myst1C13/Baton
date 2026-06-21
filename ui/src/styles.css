@@ -163,7 +163,7 @@ svg { flex: 0 0 auto; }
   font-family: var(--mono);
   font-size: 10px;
 }
-.rail-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow: auto; }
+.rail-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; min-height: 0; }
 
 /* shadcn-style card surface for the rail widgets */
 .agent,
@@ -233,6 +233,17 @@ svg { flex: 0 0 auto; }
 .check-state.pass { color: var(--green); }
 .check-state.fail { color: var(--red); }
 .check-state.pending { color: var(--muted); }
+.verify-input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 8px 10px;
+  background: var(--bg);
+  color: var(--ink);
+  font: 12px/1.4 var(--mono);
+  outline: none;
+}
+.verify-input:focus { border-color: var(--ring); box-shadow: 0 0 0 3px rgba(82, 82, 91, 0.25); }
 
 /* ---- controls ------------------------------------------------------- */
 .controls {
