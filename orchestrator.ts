@@ -1,43 +1,54 @@
 /**
  * RelayIDE — Orchestrator
  * -----------------------
- * The conductor. It owns the lifecycle of "the work" as it moves between
- * providers, and it is the ONLY component allowed to start or stop a session.
+ * The conductor — the teammate-owned LOOP that drives the engine. It is the
+ * ONLY component allowed to start or stop a session, and it never reaches into
+ * Redis or the UI: it calls the engine's pure functions
+ * (`collectEvidence` → `distill` → `adapter.launch`) and emits `RelayEvent`s for
+ * whoever is listening (event-store / control tower).
  *
  * It is provider-neutral by construction: it holds a registry of
- * `ProviderAdapter`s and a `Router`, and it never names a concrete provider or
- * treats one as a "home base". The very first session is just another
- * `RouteTarget`; a "switch" is the same flow whether we're leaving Claude for
- * Codex, Codex for Gemini, or anything else.
+ * `ProviderAdapter`s and a `Router`, and never treats one provider as a "home
+ * base". A "switch" is the same flow whether we're leaving Claude for Codex,
+ * Codex for Claude, or anything else.
  *
- * The switch state machine (one transactional flow per trigger):
+ * The switch transaction (one transactional flow per trigger), matching the
+ * "minimal end-to-end" in INTEGRATION.md:
  *
- *   freeze   → capture the workspace snapshot (git diff + skeletons)
+ *   freeze   → capture the workspace snapshot (git diff + changed files)
  *   route    → reason + snapshot → where to land (which provider/model)
- *   compress → distil the situation into a small handoff manifest, run on a
- *              provider that is currently UP (never the one that just died)
- *   launch   → boot a fresh session of the target, seeded with the manifest
+ *   collect  → assemble the EvidenceBundle (fresh git facts + runtime context)
+ *   distill  → EvidenceBundle → validated HandoffPacket (never throws)
+ *   persist  → write the packet to .relay_handoff.json (what adapters resume from)
+ *   launch   → boot a fresh session of the target, seeded with the packet
  *   resume   → retire the old session, adopt the new one as current
  *
  * Triggers feed in through a single door — `requestSwitch(reason)` — whether
- * they come from a live session's error stream (rate limit / crash), the
- * workspace/terminal monitors (context pressure), or a human clicking a button
- * (manual). Everything that observes the run subscribes to the orchestrator's
- * events, which double as the Relay timeline.
+ * they come from a live session's `onError` (rate limit / crash), a monitor
+ * (context pressure), or a human (manual). The runtime facts a packet needs
+ * (commands, the latest failure, terminal context) can't be re-pulled from git,
+ * so the loop records them live via `recordCommand` / `recordFailure`.
  */
 
 import { EventEmitter } from "events";
+import * as fs from "fs";
 import * as path from "path";
 import { captureWorkspace, WorkspaceSnapshot } from "./extract";
-import { runCompression, HandoffManifest } from "./compressor";
+import { collectEvidence, RuntimeContext } from "./evidence-collector";
+import { distill, PacketMeta } from "./compressor";
 import {
-  CompressBackend,
   LiveSession,
   ProviderAdapter,
   RouteTarget,
   Router,
   SwitchReason,
 } from "./contracts";
+import {
+  AgentId,
+  CommandResult,
+  HandoffPacket,
+  HandoffTrigger,
+} from "./packages/shared";
 
 // ---------------------------------------------------------------------------
 // Default router — a simple ordered fleet with failover
@@ -64,9 +75,7 @@ export class FleetRouter implements Router {
   ): RouteTarget {
     if (reason.kind === "manual" && reason.target) return reason.target;
 
-    const next = this.fleet.find(
-      (t) => t.provider !== ctx.current.provider
-    );
+    const next = this.fleet.find((t) => t.provider !== ctx.current.provider);
     return next ?? ctx.current;
   }
 }
@@ -88,9 +97,15 @@ export interface OrchestratorOptions {
   adapters: ProviderAdapter[];
   /** Routing policy. Defaults to a FleetRouter over the adapters' providers. */
   router?: Router;
-  /** Model used to perform compression. */
-  compressorModel?: string;
-  /** Where the handoff manifest is written / read between sessions. */
+  /** The original ask — the intent anchor that grounds every handoff packet. */
+  goal: string;
+  /** What "done" means; passed through to the distiller. */
+  acceptanceCriteria?: string[];
+  /** The focused command that proves completion. Default "npm test". */
+  verificationCommand?: string;
+  /** Session id stamped onto evidence + packets. Default is generated. */
+  sessionId?: string;
+  /** Where the handoff packet is written / read between sessions. */
   handoffPath?: string;
 }
 
@@ -98,13 +113,22 @@ export class Orchestrator extends EventEmitter {
   private readonly workspaceDir: string;
   private readonly adapters: Map<string, ProviderAdapter>;
   private readonly router: Router;
-  private readonly compressorModel?: string;
+  private readonly goal: string;
+  private readonly acceptanceCriteria: string[];
+  private readonly verificationCommand: string;
+  private readonly sessionId: string;
   private readonly handoffPath: string;
 
   private phase: OrchestratorPhase = "idle";
   private current: LiveSession | null = null;
   private currentTarget: RouteTarget | null = null;
-  private lastManifest: HandoffManifest | null = null;
+  private lastPacket: HandoffPacket | null = null;
+
+  // Runtime facts git can't provide — recorded live as the agent runs.
+  private commands: CommandResult[] = [];
+  private latestFailure: string | null = null;
+  private terminalExcerpt = "";
+
   /** Held while a switch runs so re-entrant triggers join it instead of racing. */
   private inFlight: Promise<LiveSession> | null = null;
 
@@ -120,25 +144,26 @@ export class Orchestrator extends EventEmitter {
       new FleetRouter(
         opts.adapters.map((a) => ({ provider: a.provider, model: "" }))
       );
-    this.compressorModel = opts.compressorModel;
+    this.goal = opts.goal;
+    this.acceptanceCriteria = opts.acceptanceCriteria ?? [];
+    this.verificationCommand = opts.verificationCommand ?? "npm test";
+    this.sessionId = opts.sessionId ?? `relay-${Date.now()}`;
     this.handoffPath =
       opts.handoffPath ?? path.join(this.workspaceDir, ".relay_handoff.json");
   }
 
   // --- public surface -----------------------------------------------------
 
-  /** Boot the first session. No manifest is seeded — this is a cold start. */
-  async start(initial: RouteTarget): Promise<LiveSession> {
+  /**
+   * Adopt the first, already-running session. The engine's adapters only
+   * `launch` from a handoff packet (resumption), so the cold-start session is
+   * created by the runtime/terminal that spawned the agent; the orchestrator
+   * takes ownership of it here and starts watching its signals.
+   */
+  start(initial: RouteTarget, session: LiveSession): LiveSession {
     if (this.phase !== "idle") {
       throw new Error(`Orchestrator already started (phase=${this.phase}).`);
     }
-    const adapter = this.adapterFor(initial.provider);
-
-    const session = await adapter.launch({
-      model: initial.model,
-      workspace: this.workspaceDir,
-    });
-
     this.adopt(session, initial);
     this.phase = "running";
     this.emitEvent("session.started", { target: initial });
@@ -165,7 +190,7 @@ export class Orchestrator extends EventEmitter {
     }
 
     this.phase = "switching";
-    this.emitEvent("switch.requested", { reason });
+    this.emitEvent("handoff.started", { reason });
 
     this.inFlight = this.runSwitch(reason)
       .then((session) => {
@@ -185,16 +210,34 @@ export class Orchestrator extends EventEmitter {
     return this.inFlight;
   }
 
+  /** Record a command the live agent ran — feeds the next packet's evidence. */
+  recordCommand(command: CommandResult): void {
+    this.commands.push(command);
+    if (command.exitCode !== null && command.exitCode !== 0) {
+      this.latestFailure = command.output;
+    }
+  }
+
+  /** Record the most recent failing output (a crash / 429 / failed test). */
+  recordFailure(output: string): void {
+    this.latestFailure = output;
+  }
+
+  /** Record bounded recent terminal context for the next packet. */
+  recordTerminal(excerpt: string): void {
+    this.terminalExcerpt = excerpt;
+  }
+
   /** Current orchestrator state — feeds the control tower / health indicator. */
   getState(): {
     phase: OrchestratorPhase;
     current: RouteTarget | null;
-    lastManifest: HandoffManifest | null;
+    lastPacket: HandoffPacket | null;
   } {
     return {
       phase: this.phase,
       current: this.currentTarget,
-      lastManifest: this.lastManifest,
+      lastPacket: this.lastPacket,
     };
   }
 
@@ -208,7 +251,7 @@ export class Orchestrator extends EventEmitter {
     }
     this.current = null;
     this.phase = "stopped";
-    this.emitEvent("stopped", {});
+    this.emitEvent("session.completed", {});
   }
 
   // --- the switch transaction --------------------------------------------
@@ -223,44 +266,52 @@ export class Orchestrator extends EventEmitter {
       churn: snapshot.stats.additions + snapshot.stats.deletions,
     });
 
-    // 2. ROUTE — decide where to land before compressing, so the manifest can
-    //    name the real destination model.
+    // 2. ROUTE — decide where to land before distilling, so the packet's
+    //    targetAgent names the real destination.
     const to = this.router.route(reason, { current: from, snapshot });
     this.adapterFor(to.provider); // validate the target is registered up front
     this.emitEvent("routed", { from, to, reason });
 
-    // 3. COMPRESS — on a provider that is currently UP. The one that just died
-    //    must not be asked to summarise its own demise.
-    const { provider: compressProvider, backend } = this.pickCompressBackend(
-      reason,
-      from,
-      to
+    // 3. COLLECT — fresh git facts + the runtime context we recorded live.
+    const runtime: RuntimeContext = {
+      sessionId: this.sessionId,
+      goal: this.goal,
+      acceptanceCriteria: this.acceptanceCriteria,
+      commands: this.commands,
+      latestFailure: this.latestFailure,
+      relevantTerminalExcerpt: this.terminalExcerpt,
+    };
+    const evidence = collectEvidence(this.workspaceDir, runtime);
+
+    // 4. DISTILL — EvidenceBundle → validated HandoffPacket. Never throws: on
+    //    any failure the engine returns a deterministic fallback packet, so a
+    //    handoff is always produced.
+    const meta: PacketMeta = {
+      sessionId: this.sessionId,
+      sourceAgent: AgentId.parse(from.provider),
+      targetAgent: AgentId.parse(to.provider),
+      trigger: toTrigger(reason),
+      verificationCommand: this.verificationCommand,
+      // The size being compressed — the live session's real token count.
+      sourceTokens: this.current?.usage().tokens ?? 0,
+    };
+    this.emitEvent("distilling", { targetModel: to.model });
+    const packet = await distill(evidence, meta);
+    this.lastPacket = packet;
+
+    // 5. PERSIST — the packet on disk is exactly what the adapter resumes from.
+    fs.writeFileSync(
+      this.handoffPath,
+      JSON.stringify(packet, null, 2) + "\n",
+      "utf-8"
     );
-    this.emitEvent("compressing", {
-      provider: compressProvider,
-      targetModel: to.model,
-    });
-
-    let manifest: HandoffManifest;
-    try {
-      manifest = await runCompression({
-        workspaceDir: this.workspaceDir,
-        backend,
-        compressorModel: this.compressorModel,
-        targetModel: to.model,
-        handoffPath: this.handoffPath,
-      });
-    } catch (err) {
-      this.emitEvent("error", { phase: "compress", error: errMessage(err) });
-      throw err;
-    }
-    this.lastManifest = manifest;
-    this.emitEvent("compressed", {
+    this.emitEvent("handoff.created", {
       handoffPath: this.handoffPath,
-      goal: manifest.task?.goal,
+      goal: packet.task.goal,
+      metrics: packet.metrics,
     });
 
-    // 4. LAUNCH — boot the fresh target seeded with the manifest.
+    // 6. LAUNCH — boot the fresh target seeded with the packet.
     this.emitEvent("launching", { target: to });
     const next = await this.adapterFor(to.provider).launch({
       model: to.model,
@@ -268,53 +319,23 @@ export class Orchestrator extends EventEmitter {
       manifestPath: this.handoffPath,
     });
 
-    // 5. RESUME — only now retire the old session and adopt the new one. If
+    // 7. RESUME — only now retire the old session and adopt the new one. If
     //    launch had thrown above, we'd never have touched the still-live old
-    //    session.
+    //    session. A switch consumes the recorded runtime facts.
     try {
       this.current?.stop();
     } catch {
       /* old session already gone */
     }
+    this.commands = [];
+    this.latestFailure = null;
+    this.terminalExcerpt = "";
     this.adopt(next, to);
-    this.emitEvent("switched", { from, to });
+    this.emitEvent("agent.switched", { from, to });
     return next;
   }
 
   // --- helpers ------------------------------------------------------------
-
-  /**
-   * Choose which provider runs the compression. The guiding rule: never the
-   * one that just failed. For failure reasons we route AWAY from the current
-   * provider, so the destination is by definition healthy — compress there.
-   * For benign reasons (context_full, manual, cost) the current provider is
-   * fine, but the destination works equally well and keeps the logic uniform.
-   */
-  private pickCompressBackend(
-    reason: SwitchReason,
-    from: RouteTarget,
-    to: RouteTarget
-  ): { provider: string; backend: CompressBackend } {
-    const downProvider = isFailure(reason) ? from.provider : undefined;
-
-    // Preference: the destination (known-up), then any adapter that isn't the
-    // downed one, then — last resort — whatever we have.
-    const candidates = [
-      to.provider,
-      ...Array.from(this.adapters.keys()),
-    ];
-    for (const provider of candidates) {
-      if (provider === downProvider) continue;
-      const adapter = this.adapters.get(provider);
-      if (adapter) return { provider, backend: adapter.compress };
-    }
-
-    // Everything is "down" by our heuristic — fall back to the destination's
-    // backend anyway; a deterministic fallback inside the compressor is the
-    // real safety net.
-    const fallback = this.adapterFor(to.provider);
-    return { provider: fallback.provider, backend: fallback.compress };
-  }
 
   private adapterFor(provider: string): ProviderAdapter {
     const adapter = this.adapters.get(provider);
@@ -331,9 +352,12 @@ export class Orchestrator extends EventEmitter {
   private adopt(session: LiveSession, target: RouteTarget): void {
     this.current = session;
     this.currentTarget = target;
-    session.onError((err) => {
-      // A live session failing is itself a switch trigger. Classify and route.
-      this.requestSwitch(classifyError(err)).catch(() => {
+    session.onError((e) => {
+      // The engine's sessions surface structured signals ({ kind, detail }); a
+      // raw Error is classified instead. Either way it's a switch trigger.
+      const detail = signalDetail(e);
+      if (detail) this.latestFailure = detail;
+      this.requestSwitch(toSwitchReason(e)).catch(() => {
         /* the switch's own error event already reported this */
       });
     });
@@ -364,19 +388,52 @@ export interface Orchestrator {
 }
 
 // ---------------------------------------------------------------------------
-// Trigger classification — raw failures → a structured SwitchReason
+// Trigger classification — raw signals → structured reasons / triggers
 // ---------------------------------------------------------------------------
 
-/** Does this reason imply the CURRENT provider is unusable right now? */
-function isFailure(reason: SwitchReason): boolean {
-  return (
-    reason.kind === "rate_limit" ||
-    reason.kind === "outage" ||
-    reason.kind === "crash"
-  );
+/** Map a SwitchReason to the packet's HandoffTrigger enum (the four spec'd). */
+function toTrigger(reason: SwitchReason): HandoffTrigger {
+  switch (reason.kind) {
+    case "rate_limit":
+      return "rate_limit";
+    case "context_full":
+      return "context_full";
+    case "crash":
+    case "outage": // outage has no trigger of its own — closest is "crash"
+      return "crash";
+    default: // cost | manual
+      return "manual";
+  }
 }
 
-/** Map an opaque session error into the structured reason the router expects. */
+/** Pull a human-readable detail string out of a session signal, if present. */
+function signalDetail(e: unknown): string | null {
+  if (e && typeof e === "object" && "detail" in e) {
+    const d = (e as { detail?: unknown }).detail;
+    if (typeof d === "string" && d) return d;
+  }
+  return null;
+}
+
+/**
+ * Normalise whatever a session surfaces into a SwitchReason. The engine's
+ * sessions already fire `{ kind, detail }` objects; anything else (a thrown
+ * Error, a string) is pattern-matched.
+ */
+export function toSwitchReason(e: unknown): SwitchReason {
+  if (e && typeof e === "object" && "kind" in e) {
+    const kind = (e as { kind?: unknown }).kind;
+    if (kind === "rate_limit") return { kind: "rate_limit" };
+    if (kind === "context_full") return { kind: "context_full" };
+    if (kind === "outage") return { kind: "outage" };
+    if (kind === "crash") {
+      return { kind: "crash", detail: signalDetail(e) ?? "session crashed" };
+    }
+  }
+  return classifyError(e);
+}
+
+/** Map an opaque error into the structured reason the router expects. */
 export function classifyError(err: unknown): SwitchReason {
   const msg = errMessage(err).toLowerCase();
   if (/rate.?limit|\b429\b|quota|too many requests/.test(msg)) {
@@ -405,73 +462,70 @@ function errMessage(err: unknown): string {
 // Demo harness — `npx tsx orchestrator.ts`
 // ---------------------------------------------------------------------------
 //
-// Real adapters' `launch` is the injection team's step (and `compress` shells
-// out to a live CLI), so this harness wires FAKE adapters to exercise the
-// orchestrator end-to-end on its own: a Claude session "rate-limits", and the
-// orchestrator freezes, routes to Codex, compresses, and resumes — printing the
-// timeline it would feed the UI.
+// Wires FAKE provider sessions to exercise the orchestrator loop end-to-end: a
+// "Claude" session rate-limits, and the orchestrator freezes, routes to Codex,
+// collects real git evidence, distills (the real engine — which falls back to a
+// deterministic packet if no CLI is reachable), persists, and resumes —
+// printing the timeline it would feed the UI. The fake adapters stand in for the
+// real ones so the loop runs without spawning agent CLIs.
 
 if (require.main === module) {
+  const makeFakeSession = (
+    provider: string,
+    model: string,
+    rateLimit = false
+  ): LiveSession => {
+    let errCb: (e: unknown) => void = () => {};
+    if (rateLimit) {
+      setTimeout(
+        () => errCb({ kind: "rate_limit", detail: "API error 429: rate limit" }),
+        50
+      );
+    }
+    return {
+      provider,
+      model,
+      usage: () => ({ tokens: 18420, window: 200000 }),
+      onError: (cb) => {
+        errCb = cb;
+      },
+      readTranscript: () => ({ ask: "fix the migration", tail: [] }),
+      stop: () => {},
+    };
+  };
+
   const makeFakeAdapter = (provider: string): ProviderAdapter => ({
     provider,
-    compress: async () =>
-      JSON.stringify({
-        target_model: `${provider}-model`,
-        task: {
-          goal: "Finish the users.age migration safely.",
-          status: "blocked",
-          progress: ["Wrote ALTER TABLE in migrate.ts"],
-          remaining: ["Guard against partial application"],
-          next_action: "Check the schema before re-running.",
-        },
-        focus_files: [],
-        decisions: [],
-        constraints: ["migrations are append-only"],
-        open_questions: [],
-        cognitive_negative_memory:
-          "Do NOT re-run the migration blindly — the age column may be half-applied.",
-      }),
-    launch: async (opts) => {
-      let errCb: (err: unknown) => void = () => {};
-      const session: LiveSession = {
-        provider,
-        model: opts.model,
-        usage: () => ({ tokens: 1200, window: 200000 }),
-        onError: (cb) => {
-          errCb = cb;
-        },
-        readTranscript: () => ({ ask: "fix the migration", tail: [] }),
-        stop: () => {},
-      };
-      // For the demo, make the Claude session "rate-limit" shortly after boot.
-      if (provider === "claude") {
-        setTimeout(() => errCb(new Error("API error 429: rate limit exceeded")), 50);
-      }
-      return session;
-    },
+    compress: async () => "{}", // unused in the demo (distill picks the backend)
+    launch: async (opts) =>
+      makeFakeSession(provider, opts.model || `${provider}-default`),
   });
 
+  const workspace = process.argv[2] || process.cwd();
   const orchestrator = new Orchestrator({
-    workspaceDir: process.argv[2] || process.cwd(),
+    workspaceDir: workspace,
     adapters: [makeFakeAdapter("claude"), makeFakeAdapter("codex")],
     router: new FleetRouter([
       { provider: "claude", model: "claude-opus-4-8" },
       { provider: "codex", model: "gpt-5-codex" },
     ]),
+    goal: "Fix the users.age migration so it is safe to re-run.",
+    verificationCommand: "npm test",
   });
 
   orchestrator.on("event", (e) => {
-    console.log(
-      `[relay] ${e.type.padEnd(18)} ${JSON.stringify(e.payload)}`
-    );
+    console.log(`[relay] ${e.type.padEnd(18)} ${JSON.stringify(e.payload)}`);
   });
 
   (async () => {
-    console.log("[relay] starting on claude…");
-    await orchestrator.start({ provider: "claude", model: "claude-opus-4-8" });
-    // The fake claude session rate-limits on its own; give the switch time to
-    // complete, then report where we landed.
-    await new Promise((r) => setTimeout(r, 500));
+    console.log("[relay] adopting a live claude session…");
+    // The runtime spawned the first agent; the orchestrator adopts it. This one
+    // rate-limits on its own, which trips the switch.
+    orchestrator.start(
+      { provider: "claude", model: "claude-opus-4-8" },
+      makeFakeSession("claude", "claude-opus-4-8", /* rateLimit */ true)
+    );
+    await new Promise((r) => setTimeout(r, 1500));
     console.log("[relay] final state:", orchestrator.getState().current);
     orchestrator.stop();
   })().catch((err) => {

@@ -86,12 +86,13 @@ export function extractSkeleton(fileContents: string): string[] {
 function parseChangedFiles(porcelain: string): string[] {
   return porcelain
     .split("\n")
-    .map((line) => line.trim())
     .filter(Boolean)
-    // Porcelain format: "XY <path>" (and "XY <old> -> <new>" for renames).
+    // Strip the porcelain status field robustly: optional leading whitespace
+    // (the overall output may have been trimmed), then 1-2 status symbols, then
+    // the separating whitespace. Works whether or not the leading space survived.
     .map((line) => {
-      const parts = line.replace(/^..\s+/, "");
-      const renameSplit = parts.split(" -> ");
+      const pathPart = line.replace(/^\s*[MADRCU?!]{1,2}\s+/, "");
+      const renameSplit = pathPart.split(" -> ");
       return renameSplit[renameSplit.length - 1].trim();
     })
     .filter((f) => /\.(ts|tsx)$/.test(f));

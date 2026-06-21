@@ -1,0 +1,1 @@
+Make applyMigration in migrate.ts idempotent so it is safe to re-run: it should add the "age" column to the users table only if the column does not already exist, and return a structured MigrationResult.

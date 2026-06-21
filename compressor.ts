@@ -1,369 +1,384 @@
 /**
- * RelayIDE — Compressor Engine (headless test harness)
+ * RelayIDE — Distiller (EvidenceBundle → HandoffPacket)
  * ----------------------------------------------------
- * Goal: take the raw state of a "broken" workspace, compress the situation
- * into a strict JSON handoff manifest using the user's LOCAL `claude` CLI in
- * headless print mode (zero API cost — rides the existing Claude Code
- * subscription/OAuth, no API key, no per-token bill), and write the result
- * to `.relay_handoff.json`.
+ * The Distiller's single input is an `EvidenceBundle` (+ `PacketMeta`); its
+ * single output is a validated `HandoffPacket`. The orchestrator calls
+ * `distill(evidence, meta)`; this file's `main()` is just a test harness that
+ * builds those inputs from the mock workspace.
  *
- * Pipeline:
- *   1. extractWorkspaceState()  — git diff + code skeleton + stderr trace
- *   2. assemblePrompt()         — concat into a strict instruction prompt
- *   3. COMPRESS_BACKEND()       — pluggable provider call (Claude by default)
- *   4. scrubJson()              — pull the pure JSON object out of the reply
- *   5. writeHandoff()           — persist `.relay_handoff.json`
+ * Design:
+ *  - The LLM produces only the reasoning subset (`DistilledClaims`); code fills
+ *    the deterministic facts from `evidence` + `meta`.
+ *  - Token-reduction `metrics` are computed and attached.
+ *  - The packet is validated with `HandoffPacket.parse()` (Zod).
+ *  - On any failure a DETERMINISTIC fallback packet is returned instead.
  *
- * Run with:  npx ts-node compressor.ts
- *
- * Only Node built-ins are used (child_process, fs, path) so the only dev
- * deps you need are `ts-node` and `@types/node`.
+ * Public API (for the orchestrator): `distill(evidence, meta)`.
+ * Harness:  npx tsx compressor.ts ./relay-mock
  */
 
 import * as fs from "fs";
 import * as path from "path";
-import { captureWorkspace, formatSkeletons } from "./extract";
+import { z } from "zod";
+import { collectEvidence, RuntimeContext } from "./evidence-collector";
 import { CompressBackend } from "./contracts";
 import { claudeAdapter } from "./adapters/claude";
+import { codexAdapter } from "./adapters/codex";
+import {
+  EvidenceBundle,
+  HandoffPacket,
+  HandoffStatus,
+  Decision,
+  FocusFile,
+  AgentId,
+  HandoffTrigger,
+} from "./packages/shared";
 
 // ---------------------------------------------------------------------------
-// Config
+// Config (env-driven; the orchestrator supplies these as PacketMeta in prod)
 // ---------------------------------------------------------------------------
 
-/** Workspace we are analysing. Defaults to CWD; override via argv[2]. */
 const WORKSPACE_DIR = path.resolve(process.argv[2] || process.cwd());
-
-/** Mock terminal-crash log used by this test harness in place of live stderr. */
 const MOCK_STDERR_FILE = path.join(WORKSPACE_DIR, "mock-stderr.log");
-
-/** Where the compressed handoff is written. */
+const MOCK_ASK_FILE = path.join(WORKSPACE_DIR, "mock-ask.txt");
 const HANDOFF_FILE = path.join(WORKSPACE_DIR, ".relay_handoff.json");
 
-/**
- * The model we want the *next* coding session to resume on (a label written
- * into the manifest), and the model the `claude` CLI uses to do the
- * compression. Keep them separable: you may want a cheap/fast model to
- * compress and a stronger one to resume coding.
- */
-const TARGET_MODEL = process.env.RELAY_TARGET_MODEL || "claude-opus-4-8";
 const COMPRESSOR_MODEL =
   process.env.RELAY_COMPRESSOR_MODEL || "claude-sonnet-4-6";
 
-/**
- * The compression BACKEND — which provider does the summarization. Pluggable so
- * compression can run on whatever provider is currently UP (the primary may be
- * the very thing that's rate-limited). Claude is the default, NOT a dependency;
- * register more backends here as their adapters land (gemini, ollama, …).
- */
+const SESSION_ID = process.env.RELAY_SESSION_ID || "demo-session";
+const SOURCE_AGENT = AgentId.parse(process.env.RELAY_SOURCE_AGENT || "claude");
+const TARGET_AGENT = AgentId.parse(process.env.RELAY_TARGET_AGENT || "codex");
+const TRIGGER = HandoffTrigger.parse(process.env.RELAY_TRIGGER || "manual");
+const VERIFY_COMMAND = process.env.RELAY_VERIFY_CMD || "npm test";
+const SOURCE_TOKENS_OVERRIDE = process.env.RELAY_SOURCE_TOKENS
+  ? Number(process.env.RELAY_SOURCE_TOKENS)
+  : null;
+
 const COMPRESS_BACKEND_NAME = process.env.RELAY_COMPRESS_BACKEND || "claude";
 const BACKENDS: Record<string, CompressBackend> = {
   claude: claudeAdapter.compress,
+  codex: codexAdapter.compress,
 };
 const COMPRESS_BACKEND: CompressBackend =
   BACKENDS[COMPRESS_BACKEND_NAME] ?? claudeAdapter.compress;
 
 // ---------------------------------------------------------------------------
-// Types
+// Distiller input/output contract
 // ---------------------------------------------------------------------------
 
-interface WorkspaceState {
-  gitDiff: string;
-  codeSkeleton: string;
-  stderrTrace: string;
+/** The deterministic facts the orchestrator supplies alongside the evidence. */
+export interface PacketMeta {
+  sessionId: string;
+  sourceAgent: z.infer<typeof AgentId>;
+  targetAgent: z.infer<typeof AgentId>;
+  trigger: z.infer<typeof HandoffTrigger>;
+  verificationCommand: string;
+  sourceTokens: number; // the live session's token count (for the metric)
 }
 
-/**
- * The expanded handoff schema. The guiding principle for every field: include
- * only what CANNOT be re-derived from the workspace on disk (intent, progress,
- * decisions, pointers) and exclude raw content (file bodies, full diffs) — the
- * next agent reads those lazily from disk. This keeps the manifest information-
- * dense but small (~1-2K tokens vs. the ~120K transcript it replaces).
- */
-interface FocusFile {
-  path: string; // repo-relative path the next agent should open first
-  role: string; // why this file matters to the task
-  state: string; // its current condition (e.g. "has the bug at line 8", "read-only ref")
-}
-
-interface Decision {
-  choice: string; // an architectural/implementation choice already made
-  why: string; // the rationale — so the next agent doesn't relitigate it
-}
-
-interface HandoffTask {
-  goal: string; // the objective, enough for a cold start
-  status: string; // e.g. "in_progress" | "blocked"
-  progress: string[]; // what is already done
-  remaining: string[]; // what is left to do
-  next_action: string; // the single concrete next step
-}
-
-export interface HandoffManifest {
-  target_model: string;
-  task: HandoffTask;
-  focus_files: FocusFile[]; // the curated index that prevents whole-repo exploration
-  decisions: Decision[];
-  constraints: string[]; // invariants / hard-won rules the next agent must respect
-  open_questions: string[]; // known unknowns to focus the first moves
-  cognitive_negative_memory: string; // explicit "do NOT" guidance from the failure
-  // The CLI may add extra keys; we keep them but require the above.
-  [k: string]: unknown;
-}
+/** What the model is asked to produce — the reasoning subset of the packet. */
+const DistilledClaims = z.object({
+  goal: z.string(),
+  acceptanceCriteria: z.array(z.string()),
+  status: HandoffStatus,
+  summary: z.string(),
+  decisions: z.array(Decision),
+  constraints: z.array(z.string()),
+  nextActions: z.array(z.string()),
+  diffSummary: z.array(z.string()),
+  pitfalls: z.array(z.string()),
+  focusFiles: z.array(FocusFile),
+  confidence: z.number(),
+});
+type DistilledClaims = z.infer<typeof DistilledClaims>;
 
 // ---------------------------------------------------------------------------
-// Step 1 — Local Data Extraction
+// Prompt assembler (consumes the EvidenceBundle)
 // ---------------------------------------------------------------------------
 
-/**
- * Assemble the compressor's view of the workspace: the shared `captureWorkspace`
- * snapshot (git diff + skeletons — same logic the live monitor uses) plus the
- * crash trace. The stderr is compressor-only: it's the freeze-time artifact the
- * monitor has no reason to track, so it's read here, not in the shared module.
- */
-function extractWorkspaceState(workspaceDir: string = WORKSPACE_DIR): WorkspaceState {
-  const snapshot = captureWorkspace(workspaceDir);
+function assemblePrompt(ev: EvidenceBundle): string {
+  const criteria = ev.acceptanceCriteria.length
+    ? ev.acceptanceCriteria.map((c) => `- ${c}`).join("\n")
+    : "(none provided — infer from the goal)";
+  const commands = ev.commands.length
+    ? ev.commands
+        .map((c) => `$ ${c.command}  (exit ${c.exitCode})\n${c.output}`)
+        .join("\n")
+    : "(no commands recorded)";
 
-  // Stderr (mocked from disk for this harness) — the terminal crash trace.
-  // Derived from the workspace so the orchestrator can point it at any dir.
-  const stderrFile =
-    workspaceDir === WORKSPACE_DIR
-      ? MOCK_STDERR_FILE
-      : path.join(workspaceDir, "mock-stderr.log");
-  let stderrTrace = "(no stderr captured)";
-  if (fs.existsSync(stderrFile)) {
-    stderrTrace = fs.readFileSync(stderrFile, "utf-8").trim();
-  }
+  return `You are RelayIDE's distiller. A coding session is being handed off to a fresh agent that still has the full repo on disk. Analyse the evidence and produce a compressed handoff.
 
-  return {
-    gitDiff: snapshot.gitDiff || "(no unstaged changes)",
-    codeSkeleton: formatSkeletons(snapshot.skeletons),
-    stderrTrace,
-  };
-}
+The fresh agent can run git and read any file itself, so do NOT restate file contents or the diff. Capture only what it cannot recover from disk: intent, status, decisions, the few files that matter, and — critically — what it must NOT do based on the failure.
 
-// ---------------------------------------------------------------------------
-// Step 2 — Prompt Assembler
-// ---------------------------------------------------------------------------
-
-/**
- * Build the strict compression prompt. We are explicit about output shape so
- * the scrubber has the best chance of finding a single clean JSON object.
- */
-function assemblePrompt(
-  state: WorkspaceState,
-  targetModel: string = TARGET_MODEL
-): string {
-  return `You are RelayIDE's context compressor. A coding session crashed or hit a rate limit mid-task. Below is the raw workspace state. Analyse the failure and produce a compressed handoff for a FRESH agent that must resume the work in the SAME workspace.
-
-The fresh agent still has the full repo on disk — it can run git, read files, and grep anytime. So do NOT restate file contents or the diff. Instead, capture only what it CANNOT recover from disk: the intent, the progress so far, the decisions already made and why, the rules it must respect, and a curated pointer to the few files that matter (so it does not have to explore the whole repo).
-
-Respond with ONE JSON object and NOTHING ELSE — no prose, no markdown fences. Use EXACTLY this shape:
+Respond with ONE JSON object and NOTHING ELSE (no prose, no markdown fences) with EXACTLY these keys:
 {
-  "target_model": "${targetModel}",
-  "task": {
-    "goal": "string — the objective, 1-3 sentences, enough to resume cold",
-    "status": "in_progress | blocked",
-    "progress": ["string — a thing already completed", "..."],
-    "remaining": ["string — a thing still to do", "..."],
-    "next_action": "string — the single concrete step to take first"
-  },
-  "focus_files": [
-    { "path": "repo-relative path", "role": "why this file matters", "state": "its current condition, e.g. 'has the bug at line 8' or 'read-only reference'" }
-  ],
-  "decisions": [
-    { "choice": "an implementation/design choice already made", "why": "the rationale, so it is not relitigated" }
-  ],
-  "constraints": ["string — an invariant or hard-won rule to respect, e.g. 'migrations are append-only'"],
-  "open_questions": ["string — a known unknown to resolve first"],
-  "cognitive_negative_memory": "string — explicit, imperative 'do NOT' instructions derived from the error/stderr (e.g. 'Do not re-run the migration; the age column may already be partially applied — check the schema first.')"
+  "goal": "string — the objective, grounded in the ORIGINAL ASK; 1-3 sentences",
+  "acceptanceCriteria": ["string — what 'done' means"],
+  "status": "in_progress | blocked | tests_failing",
+  "summary": "string — 1-3 sentences of current state for a cold start",
+  "decisions": [{ "text": "a choice already made", "source": "user | repository | agent" }],
+  "constraints": ["an invariant/rule to respect"],
+  "nextActions": ["the concrete next step(s)"],
+  "diffSummary": ["one short bullet per meaningful change in the diff"],
+  "pitfalls": ["explicit 'do NOT do X' derived from the failure"],
+  "focusFiles": [{ "path": "repo-relative", "role": "why it matters", "state": "its current condition" }],
+  "confidence": 0.0
 }
+Rules: ground "goal" in the ORIGINAL ASK; use the diff to judge progress. "confidence" is your 0..1 certainty the handoff is complete and accurate. Keep every string tight.
 
-Rules:
-- Derive focus_files from the changed files in the diff plus any file they critically depend on. Keep it to the few that matter; do NOT list the whole repo.
-- progress/remaining/decisions: infer from the diff and skeleton what was being built and how far it got.
-- Arrays may be empty if genuinely nothing applies, but prefer to populate them — a richer handoff means less re-exploration.
-- Keep every string tight. The whole point is a small, dense manifest.
+=== ORIGINAL ASK ===
+${ev.goal || "(none provided)"}
+
+=== ACCEPTANCE CRITERIA ===
+${criteria}
 
 === GIT DIFF ===
-${state.gitDiff}
+${ev.gitDiff || "(no unstaged changes)"}
 
-=== CODE SKELETON (structure only, logic stripped) ===
-${state.codeSkeleton}
+=== RECENT COMMANDS ===
+${commands}
 
-=== STDERR / CRASH TRACE ===
-${state.stderrTrace}
+=== LATEST FAILURE ===
+${ev.latestFailure || "(none)"}
 
 Output the JSON object now.`;
 }
 
 // ---------------------------------------------------------------------------
-// Step 3 — Compression backend (pluggable; provider-specific code lives in
-// ./adapters/*). The headless model call is no longer hardcoded here: `main`
-// selects a `CompressBackend` (Claude by default) and hands it the prompt, so
-// any provider can perform the compression. See adapters/claude.ts for the
-// `claude -p` implementation.
+// JSON extraction (string-aware brace matching)
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Step 4 — JSON Scrubber
-// ---------------------------------------------------------------------------
-
-/**
- * Extract and parse the first complete JSON object from a possibly-chatty
- * model reply. Handles: ```json fenced blocks, leading/trailing prose, and
- * stray text after the object. Uses brace-balancing (string-aware) rather than
- * a naive regex so nested objects don't trip it up.
- */
-function scrubJson(raw: string): HandoffManifest {
+function extractJson(raw: string): unknown {
   let text = raw.trim();
-
-  // 1. If there's a fenced code block, prefer its contents.
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fence) text = fence[1].trim();
-
-  // 2. Walk to the first '{' and brace-match to its partner, ignoring braces
-  //    that appear inside string literals.
   const start = text.indexOf("{");
-  if (start === -1) {
-    throw new Error(`No JSON object found in CLI output:\n${raw}`);
-  }
-
+  if (start === -1) throw new Error(`No JSON object found:\n${raw}`);
   let depth = 0;
   let inString = false;
   let escaped = false;
   let end = -1;
-
   for (let i = start; i < text.length; i++) {
     const ch = text[i];
-
     if (inString) {
       if (escaped) escaped = false;
       else if (ch === "\\") escaped = true;
       else if (ch === '"') inString = false;
       continue;
     }
-
     if (ch === '"') inString = true;
     else if (ch === "{") depth++;
-    else if (ch === "}") {
-      depth--;
-      if (depth === 0) {
-        end = i;
-        break;
-      }
+    else if (ch === "}" && --depth === 0) {
+      end = i;
+      break;
     }
   }
-
-  if (end === -1) {
-    throw new Error(`Unbalanced JSON object in CLI output:\n${raw}`);
-  }
-
-  const jsonSlice = text.slice(start, end + 1);
-  let parsed: HandoffManifest;
-  try {
-    parsed = JSON.parse(jsonSlice);
-  } catch (e: any) {
-    throw new Error(`Failed to parse extracted JSON: ${e.message}\n${jsonSlice}`);
-  }
-
-  // Validate the contract we asked the model to honour.
-  const required = ["target_model", "task", "cognitive_negative_memory"];
-  const missing = required.filter((k) => !(k in parsed));
-  if (missing.length) {
-    throw new Error(
-      `Handoff manifest missing required keys: ${missing.join(", ")}`
-    );
-  }
-  // task is the load-bearing nested object — sanity-check its core fields.
-  const task = parsed.task as Partial<HandoffTask> | undefined;
-  if (!task || typeof task.goal !== "string") {
-    throw new Error(`Handoff manifest 'task' is missing or has no 'goal':\n${jsonSlice}`);
-  }
-
-  return parsed;
+  if (end === -1) throw new Error(`Unbalanced JSON:\n${raw}`);
+  return JSON.parse(text.slice(start, end + 1));
 }
 
 // ---------------------------------------------------------------------------
-// Step 5 — Output
+// Metrics (documented approximation)
 // ---------------------------------------------------------------------------
 
-function writeHandoff(
-  manifest: HandoffManifest,
-  handoffFile: string = HANDOFF_FILE
-): void {
-  fs.writeFileSync(handoffFile, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
+/** ~4 chars/token approximation. Swap for a provider tokenizer for exact counts. */
+function approxTokens(s: string): number {
+  return Math.ceil(s.length / 4);
+}
+
+function evidenceText(ev: EvidenceBundle): string {
+  return [
+    ev.goal,
+    ev.gitDiff,
+    ev.latestFailure ?? "",
+    ...ev.commands.map((c) => c.output),
+  ].join("\n");
+}
+
+function reduction(sourceTokens: number, packetTokens: number): number {
+  return sourceTokens > 0
+    ? Math.round((1 - packetTokens / sourceTokens) * 1000) / 10
+    : 0;
 }
 
 // ---------------------------------------------------------------------------
-// Library entrypoint — the full pipeline as one call
+// Packet assembly
 // ---------------------------------------------------------------------------
 
-export interface CompressionRequest {
-  /** Workspace to analyse. Defaults to the module's WORKSPACE_DIR (CWD/argv). */
-  workspaceDir?: string;
-  /**
-   * Which provider performs the summarization. The orchestrator injects a
-   * backend from a provider that is currently UP — the primary may be the very
-   * thing that's rate-limited. Defaults to the env-selected backend.
-   */
-  backend?: CompressBackend;
-  /** Model the backend uses to compress. Defaults to COMPRESSOR_MODEL. */
-  compressorModel?: string;
-  /** Model label written into the manifest for the resuming session. */
-  targetModel?: string;
-  /** Where to persist the manifest. Defaults to <workspace>/.relay_handoff.json. */
-  handoffPath?: string;
-}
+function buildPacket(
+  claims: DistilledClaims,
+  ev: EvidenceBundle,
+  meta: PacketMeta
+): HandoffPacket {
+  const core = {
+    version: "1.0" as const,
+    sessionId: meta.sessionId,
+    sourceAgent: meta.sourceAgent,
+    targetAgent: meta.targetAgent,
+    trigger: meta.trigger,
+    task: { goal: claims.goal, acceptanceCriteria: claims.acceptanceCriteria },
+    state: { status: claims.status, summary: claims.summary },
+    evidence: {
+      changedFiles: ev.changedFiles,
+      commands: ev.commands.map((c) => ({
+        command: c.command,
+        exitCode: c.exitCode,
+      })),
+      latestFailure: ev.latestFailure,
+      diffSummary: claims.diffSummary,
+    },
+    decisions: claims.decisions,
+    constraints: claims.constraints,
+    nextActions: claims.nextActions,
+    verificationCommand: meta.verificationCommand,
+    pitfalls: claims.pitfalls,
+    focusFiles: claims.focusFiles,
+  };
 
-/**
- * Run the whole compression pipeline (extract → assemble → compress → scrub →
- * write) and return the validated manifest. This is the seam the orchestrator
- * calls at freeze time; the CLI `main()` below is just a thin wrapper over it.
- */
-export async function runCompression(
-  req: CompressionRequest = {}
-): Promise<HandoffManifest> {
-  const workspaceDir = req.workspaceDir
-    ? path.resolve(req.workspaceDir)
-    : WORKSPACE_DIR;
-  const backend = req.backend ?? COMPRESS_BACKEND;
-  const compressorModel = req.compressorModel ?? COMPRESSOR_MODEL;
-  const targetModel = req.targetModel ?? TARGET_MODEL;
-  const handoffPath =
-    req.handoffPath ?? path.join(workspaceDir, ".relay_handoff.json");
-
-  const state = extractWorkspaceState(workspaceDir);
-  const prompt = assemblePrompt(state, targetModel);
-  const rawReply = await backend(prompt, {
-    model: compressorModel,
-    cwd: workspaceDir,
+  const packetTokens = approxTokens(JSON.stringify(core));
+  return HandoffPacket.parse({
+    ...core,
+    metrics: {
+      sourceTokens: meta.sourceTokens,
+      packetTokens,
+      reductionPercent: reduction(meta.sourceTokens, packetTokens),
+      confidence: Math.max(0, Math.min(1, claims.confidence)),
+    },
   });
-  const manifest = scrubJson(rawReply);
-  writeHandoff(manifest, handoffPath);
-  return manifest;
+}
+
+/** Deterministic fallback — built WITHOUT the model when distillation fails. */
+function buildFallbackPacket(ev: EvidenceBundle, meta: PacketMeta): HandoffPacket {
+  const core = {
+    version: "1.0" as const,
+    sessionId: meta.sessionId,
+    sourceAgent: meta.sourceAgent,
+    targetAgent: meta.targetAgent,
+    trigger: meta.trigger,
+    task: {
+      goal:
+        ev.goal ||
+        "(intent unavailable — distillation failed; infer the goal from the diff)",
+      acceptanceCriteria: ev.acceptanceCriteria,
+    },
+    state: {
+      status: "in_progress" as const,
+      summary:
+        "Deterministic fallback: the distillation model was unavailable. Treat the git diff and evidence as the source of truth.",
+    },
+    evidence: {
+      changedFiles: ev.changedFiles,
+      commands: ev.commands.map((c) => ({
+        command: c.command,
+        exitCode: c.exitCode,
+      })),
+      latestFailure: ev.latestFailure,
+      diffSummary: ev.changedFiles.map((f) => `${f} changed`),
+    },
+    decisions: [],
+    constraints: [],
+    nextActions: [
+      "Review the git diff to understand what was changed",
+      `Run the verification command: ${meta.verificationCommand}`,
+    ],
+    verificationCommand: meta.verificationCommand,
+    pitfalls: [],
+    focusFiles: [],
+  };
+
+  const packetTokens = approxTokens(JSON.stringify(core));
+  return HandoffPacket.parse({
+    ...core,
+    metrics: {
+      sourceTokens: meta.sourceTokens,
+      packetTokens,
+      reductionPercent: reduction(meta.sourceTokens, packetTokens),
+      confidence: 0.3,
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
-// CLI — `npx tsx compressor.ts [workspaceDir]`
+// Public API — the orchestrator calls this
 // ---------------------------------------------------------------------------
+
+/** Distill an EvidenceBundle into a validated HandoffPacket. Never throws —
+ *  on any failure it returns a deterministic fallback packet. */
+export async function distill(
+  evidence: EvidenceBundle,
+  meta: PacketMeta
+): Promise<HandoffPacket> {
+  try {
+    const prompt = assemblePrompt(evidence);
+    const raw = await COMPRESS_BACKEND(prompt, {
+      model: COMPRESSOR_MODEL,
+      cwd: WORKSPACE_DIR,
+    });
+    const claims = DistilledClaims.parse(extractJson(raw));
+    return buildPacket(claims, evidence, meta);
+  } catch (err) {
+    console.warn(
+      `[relay] ⚠️  distillation failed (${err instanceof Error ? err.message : err}) — using deterministic fallback.`
+    );
+    return buildFallbackPacket(evidence, meta);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Test harness — builds the inputs from the mock workspace
+// ---------------------------------------------------------------------------
+
+function readMock(file: string): string {
+  return fs.existsSync(file) ? fs.readFileSync(file, "utf-8").trim() : "";
+}
 
 async function main(): Promise<void> {
   console.log(`[relay] workspace : ${WORKSPACE_DIR}`);
+
+  // 1. Build the runtime context (in prod: from the live session).
+  const stderr = readMock(MOCK_STDERR_FILE);
+  const runtime: RuntimeContext = {
+    sessionId: SESSION_ID,
+    goal: readMock(MOCK_ASK_FILE),
+    acceptanceCriteria: [],
+    commands: [],
+    latestFailure: stderr || null,
+    relevantTerminalExcerpt: stderr,
+  };
+
+  // 2. Collect evidence (fresh git facts + the runtime context).
+  console.log("[relay] collecting evidence…");
+  const evidence = collectEvidence(WORKSPACE_DIR, runtime);
   console.log(
-    `[relay] compressing via ${COMPRESS_BACKEND_NAME} (${COMPRESSOR_MODEL})…`
+    `[relay]   branch: ${evidence.branch} | files: ${evidence.changedFiles.length} | ask: ${evidence.goal ? "yes" : "none"} | failure: ${evidence.latestFailure ? "yes" : "no"}`
   );
 
-  const manifest = await runCompression();
+  // 3. Distill (the single-input contract the orchestrator uses).
+  const meta: PacketMeta = {
+    sessionId: SESSION_ID,
+    sourceAgent: SOURCE_AGENT,
+    targetAgent: TARGET_AGENT,
+    trigger: TRIGGER,
+    verificationCommand: VERIFY_COMMAND,
+    sourceTokens: SOURCE_TOKENS_OVERRIDE ?? approxTokens(evidenceText(evidence)),
+  };
+  console.log(`[relay] distilling via ${COMPRESS_BACKEND_NAME} (${COMPRESSOR_MODEL})…`);
+  const packet = await distill(evidence, meta);
 
-  console.log(`\n[relay] ✅ wrote ${HANDOFF_FILE}\n`);
-  console.log(JSON.stringify(manifest, null, 2));
+  // 4. Write the handoff.
+  fs.writeFileSync(HANDOFF_FILE, JSON.stringify(packet, null, 2) + "\n", "utf-8");
+
+  const m = packet.metrics;
+  console.log(
+    `\n[relay] ✅ wrote ${HANDOFF_FILE}\n[relay]   ${m.sourceTokens} → ${m.packetTokens} tokens (${m.reductionPercent}% reduction, confidence ${m.confidence})\n`
+  );
+  console.log(JSON.stringify(packet, null, 2));
 }
 
-// Only run the pipeline when invoked directly — importing this module (e.g. from
-// the orchestrator) must NOT kick off a compression as a side effect.
 if (require.main === module) {
   main().catch((err) => {
-    console.error("\n[relay] ❌ compression failed:\n", err.message || err);
+    console.error("\n[relay] ❌ distiller crashed:\n", err.message || err);
     process.exit(1);
   });
 }
