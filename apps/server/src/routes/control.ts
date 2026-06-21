@@ -85,7 +85,7 @@ export async function handleControlRoutes(
     case "codex/start": {
       requireMethod(req, "POST", pathname);
       const body = StartBody.parse(await readJsonBody(req));
-      await orch.startCodex(id, { model: body.model });
+      await orch.startCodex(id, body);
       sendJson(res, 202, { sessionId: id, state: "codex_running" });
       return true;
     }

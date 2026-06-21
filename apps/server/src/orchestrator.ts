@@ -94,6 +94,8 @@ export interface OrchestratorDeps {
   verify?: typeof runVerification;
   /** Proactive context-pressure trigger, as a ratio of tokens/window. */
   contextPressureThreshold?: number;
+  /** Guard against automatic provider ping-pong. Defaults to one demo handoff. */
+  maxAutomaticHandoffs?: number;
 }
 
 interface SessionRuntime {
@@ -111,6 +113,7 @@ interface SessionRuntime {
 export class Orchestrator {
   private readonly runtime = new Map<string, SessionRuntime>();
   private readonly handoffs = new Map<string, Promise<HandoffPacket>>();
+  private readonly automaticHandoffs = new Map<string, number>();
 
   constructor(private readonly deps: OrchestratorDeps) {}
 
@@ -167,12 +170,23 @@ export class Orchestrator {
         latestFailure: rt.latestFailure,
         relevantTerminalExcerpt: rt.terminal,
       });
+      this.emit(sessionId, "workspace.frozen", {
+        changedFiles: evidence.changedFiles.length,
+        branch: evidence.branch,
+      });
 
       const targetAgent: AgentId = rt.provider === "claude" ? "codex" : "claude";
+      this.emit(sessionId, "agent.routed", {
+        from: rt.provider,
+        to: targetAgent,
+      });
       const usage = rt.adapter?.usage() ?? {
         tokens: approxTokens(JSON.stringify(evidence)),
         window: 200_000,
       };
+      this.emit(sessionId, "handoff.distilling", {
+        sourceTokens: usage.tokens,
+      });
       const packet = HandoffPacket.parse(
         await this.deps.createHandoff(evidence, {
           sessionId,
@@ -196,6 +210,9 @@ export class Orchestrator {
       this.deps.sessions.transition(sessionId, "handoff_ready");
       return packet;
     } catch (err) {
+      this.emit(sessionId, "handoff.failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
       this.deps.sessions.transition(sessionId, "failed", {
         error: err instanceof Error ? err.message : String(err),
       });
@@ -224,14 +241,27 @@ export class Orchestrator {
     }
     let manifestPath: string | undefined;
     if (packet) {
-      manifestPath = path.join(os.tmpdir(), `relay-handoff-${sessionId}.json`);
+      manifestPath = path.join(
+        os.tmpdir(),
+        `relay-handoff-${sessionId}-${randomUUID()}.json`
+      );
       fs.writeFileSync(manifestPath, JSON.stringify(packet, null, 2));
     }
-    await this.startAgent(sessionId, provider, targetState, {
-      model: opts.model,
-      prompt: opts.prompt,
-      manifestPath,
-    });
+    try {
+      await this.startAgent(sessionId, provider, targetState, {
+        model: opts.model,
+        prompt: opts.prompt,
+        manifestPath,
+      });
+    } finally {
+      if (manifestPath) {
+        try {
+          fs.unlinkSync(manifestPath);
+        } catch {
+          /* already removed */
+        }
+      }
+    }
     if (packet) {
       this.emit(sessionId, "agent.switched", {
         from: packet.sourceAgent,
@@ -260,6 +290,11 @@ export class Orchestrator {
       result.passed ? "completed" : "failed",
       result.passed ? undefined : { error: `verification failed (exit ${result.exitCode})` }
     );
+    if (result.passed) {
+      this.emit(sessionId, "session.completed", {
+        verificationCommand: session.verificationCommand,
+      });
+    }
     return result;
   }
 
@@ -300,10 +335,12 @@ export class Orchestrator {
     opts: { model?: string; prompt?: string; manifestPath?: string }
   ): Promise<void> {
     const session = this.deps.sessions.get(sessionId);
+    const startingSession = session.state === "created";
     const factory = this.deps.adapters[provider];
     if (!factory) throw new Error(`No adapter registered for "${provider}".`);
 
     const adapter = factory();
+    this.deps.sessions.transition(sessionId, targetState);
     const rt: SessionRuntime = {
       provider,
       adapter,
@@ -312,8 +349,11 @@ export class Orchestrator {
       limitDetected: false,
     };
     this.runtime.set(sessionId, rt);
+    if (startingSession) {
+      this.emit(sessionId, "session.started", { provider });
+    }
+    this.emit(sessionId, "agent.launching", { target: provider });
 
-    this.deps.sessions.transition(sessionId, targetState);
     try {
       await adapter.start(
         {
@@ -383,7 +423,7 @@ export class Orchestrator {
 
   private checkContextPressure(sessionId: string, rt: SessionRuntime): void {
     if (!this.canAutoHandoff(sessionId)) return;
-    if (!rt.adapter) return;
+    if (!rt.adapter || rt.adapter.status() !== "running") return;
     const usage = rt.adapter.usage();
     const threshold = this.deps.contextPressureThreshold ?? 0.8;
     if (usage.window <= 0 || usage.tokens / usage.window < threshold) return;
@@ -402,9 +442,28 @@ export class Orchestrator {
   ): void {
     if (!this.canAutoHandoff(sessionId)) return;
     if (rt.limitDetected || this.handoffs.has(sessionId)) return;
+    const count = this.automaticHandoffs.get(sessionId) ?? 0;
+    if (count >= (this.deps.maxAutomaticHandoffs ?? 1)) return;
+    this.automaticHandoffs.set(sessionId, count + 1);
     rt.limitDetected = true;
     this.emit(sessionId, "limit.detected", { reason: trigger, ...payload });
-    void this.buildHandoff(sessionId, trigger).catch(() => {});
+    void this.runAutomaticHandoff(sessionId, trigger);
+  }
+
+  private async runAutomaticHandoff(
+    sessionId: string,
+    trigger: Exclude<HandoffTrigger, "manual">
+  ): Promise<void> {
+    try {
+      const packet = await this.buildHandoff(sessionId, trigger);
+      await this.startResumableAgent(
+        sessionId,
+        packet.targetAgent,
+        packet.targetAgent === "claude" ? "claude_running" : "codex_running"
+      );
+    } catch {
+      // buildHandoff/startAgent already move the session to failed when needed.
+    }
   }
 
   private canAutoHandoff(sessionId: string): boolean {

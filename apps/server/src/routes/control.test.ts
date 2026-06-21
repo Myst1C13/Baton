@@ -117,3 +117,39 @@ test("wrong method on a control route is a 405", async () => {
     assert.equal(res.headers.get("allow"), "POST");
   });
 });
+
+test("codex start forwards the requested prompt", async () => {
+  const sessions = new SessionManager();
+  const codex = new FakeAgentAdapter({ id: "codex" });
+  const orchestrator = new Orchestrator({
+    sessions,
+    store: new InMemoryEventStore(),
+    adapters: {
+      claude: () => new FakeAgentAdapter({ id: "claude" }),
+      codex: () => codex,
+    },
+    createHandoff: fallbackCreateHandoff,
+  });
+  const server = http.createServer(createApiRouter({ sessions, orchestrator }));
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const { port } = server.address() as AddressInfo;
+  try {
+    const base = `http://127.0.0.1:${port}`;
+    const id = await createSession(base);
+    const res = await fetch(
+      `${base}/api/sessions/${id}/codex/start`,
+      json("POST", { prompt: "Use this exact prompt." })
+    );
+    assert.equal(res.status, 202);
+    const events = await orchestrator.getEvents(id);
+    assert.ok(
+      events.some(
+        (event) =>
+          event.type === "terminal.output" &&
+          String(event.payload.chunk).includes("Use this exact prompt.")
+      )
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

@@ -157,9 +157,10 @@ svg { flex: 0 0 auto; }
 .verify { display: flex; flex-direction: column; gap: 9px; }
 .verify small { margin-bottom: 1px; }
 .check { display: flex; align-items: center; gap: 9px; font-size: 12px; color: var(--soft); }
-.check .ok, .check .bad { width: 17px; height: 17px; border-radius: 5px; display: grid; place-items: center; }
+.check .ok, .check .bad, .check .pending { width: 17px; height: 17px; border-radius: 5px; display: grid; place-items: center; }
 .check .ok { color: var(--green); background: rgba(18, 138, 91, 0.1); }
 .check .bad { color: var(--red); background: rgba(207, 70, 81, 0.1); }
+.check .pending { color: var(--slate); background: #f2f2ef; }
 
 /* ---- controls ------------------------------------------------------- */
 .controls {
@@ -199,6 +200,7 @@ svg { flex: 0 0 auto; }
   resize: vertical;
 }
 .field select { appearance: auto; }
+.field.compact { max-width: 150px; }
 .field input:focus,
 .field textarea:focus,
 .field select:focus {
@@ -253,6 +255,39 @@ svg { flex: 0 0 auto; }
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
+.advanced {
+  border-top: 1px solid var(--line-2);
+  padding-top: 10px;
+}
+.advanced summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.advanced-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+}
+.input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+.input-row input {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 9px;
+  background: #fbfbfa;
+  color: var(--ink);
+  font: 12px/1.35 var(--mono);
+  outline: none;
+}
 
 /* packet — hidden until a handoff happens, then opens */
 .packet {
@@ -294,6 +329,16 @@ svg { flex: 0 0 auto; }
   transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }
 .switch:hover:not(:disabled) { background: #000; }
+.switch.demo {
+  border-color: var(--line);
+  background: #ffffff;
+  color: var(--soft);
+}
+.switch.demo:hover:not(:disabled) {
+  border-color: #c7c8cc;
+  background: #fafafa;
+  color: var(--ink);
+}
 .switch:disabled { cursor: default; }
 .switch:disabled { background: #fff; color: var(--soft); border-color: var(--line); }
 .spinner {
@@ -302,6 +347,10 @@ svg { flex: 0 0 auto; }
   border-top-color: var(--soft);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
+}
+.spinner.light {
+  border-color: rgba(255, 255, 255, 0.35);
+  border-top-color: #ffffff;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 

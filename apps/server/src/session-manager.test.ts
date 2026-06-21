@@ -73,7 +73,7 @@ function seed(mgr: SessionManager, state: SessionState): string {
 /** The intended adjacency — pinned so any map change is a conscious test edit. */
 const EXPECTED: Record<SessionState, SessionState[]> = {
   created: ["claude_running", "codex_running", "failed"],
-  claude_running: ["handoff_building", "failed"],
+  claude_running: ["handoff_building", "verifying", "failed"],
   handoff_building: ["handoff_ready", "failed"],
   handoff_ready: ["codex_running", "claude_running", "failed"],
   codex_running: ["verifying", "handoff_building", "failed"],

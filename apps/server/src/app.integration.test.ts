@@ -82,3 +82,29 @@ test("createAppRuntime exposes dependencies and closes them once", async () => {
   await runtime.close();
   assert.equal(storeClosed, 1);
 });
+
+test("CORS allows only the configured web origin", async () => {
+  const env = loadEnv({ PORT: "0", WEB_URL: "http://localhost:4173" });
+  const runtime = createAppRuntime(env);
+  await new Promise<void>((resolve) =>
+    runtime.server.listen(0, "127.0.0.1", resolve)
+  );
+  const { port } = runtime.server.address() as AddressInfo;
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    const allowed = await fetch(`${base}/health`, {
+      headers: { origin: env.WEB_URL },
+    });
+    assert.equal(
+      allowed.headers.get("access-control-allow-origin"),
+      env.WEB_URL
+    );
+
+    const blocked = await fetch(`${base}/health`, {
+      headers: { origin: "https://attacker.example" },
+    });
+    assert.equal(blocked.headers.get("access-control-allow-origin"), null);
+  } finally {
+    await runtime.close();
+  }
+});

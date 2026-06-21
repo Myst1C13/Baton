@@ -77,7 +77,9 @@ export class FakeAgentAdapter implements AgentAdapter {
         chunk: `fake received prompt: ${opts.prompt}\n`,
       });
     }
-    this.state = "running";
+    // A synchronous event sink may request stop() while start() is emitting.
+    // Never resurrect an adapter that was stopped during launch.
+    if (this.state === "starting") this.state = "running";
   }
 
   sendInput(data: string): void {

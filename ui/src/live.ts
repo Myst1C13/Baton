@@ -1,4 +1,8 @@
-import { type RelayEvent as RelayEventT } from "../../packages/shared";
+import {
+  HandoffPacket,
+  type HandoffPacket as HandoffPacketT,
+  type RelayEvent as RelayEventT,
+} from "../../packages/shared";
 
 export type Phase = "working" | "switching" | "resumed";
 export type LineKind = "plain" | "muted" | "prompt" | "pass" | "fail" | "relay";
@@ -49,7 +53,10 @@ export function eventLine(e: RelayEventT): Line {
   const p = e.payload;
   switch (e.type) {
     case "session.started":
-      return { kind: "prompt", value: `$ relay start — ${e.agent ?? "claude"}` };
+      return {
+        kind: "prompt",
+        value: `$ relay start — ${provider(p, "provider") ?? e.agent ?? "claude"}`,
+      };
     case "agent.started":
       return { kind: "prompt", value: `$ ${e.agent ?? "agent"} running` };
     case "process.started":
@@ -124,6 +131,11 @@ export function eventLine(e: RelayEventT): Line {
         kind: "relay",
         value: `↪ relay: switched ${provider(p, "from") ?? "claude"} → ${provider(p, "to") ?? "codex"}`,
       };
+    case "handoff.failed":
+      return {
+        kind: "fail",
+        value: `✖ relay handoff failed${s(p, "error") ? ` — ${s(p, "error")}` : ""}`,
+      };
     case "session.completed":
       return { kind: "pass", value: "✔ session complete" };
     default:
@@ -158,6 +170,19 @@ export function derivePhase(events: RelayEventT[]): Phase {
 /** Whether a validated handoff packet has been produced. */
 export function packetReady(events: RelayEventT[]): boolean {
   return events.some((e) => e.type === "handoff.created");
+}
+
+/** Latest complete packet carried by a handoff.created event, when available. */
+export function latestHandoffPacket(
+  events: RelayEventT[]
+): HandoffPacketT | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]!;
+    if (event.type !== "handoff.created") continue;
+    const parsed = HandoffPacket.safeParse(event.payload.packet);
+    if (parsed.success) return parsed.data;
+  }
+  return null;
 }
 
 /** Migration/test verification state from the latest relevant test event. */

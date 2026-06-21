@@ -5,20 +5,20 @@ import {
   activeAgent,
   derivePhase,
   eventLine,
+  latestHandoffPacket,
   migrationState,
   packetReady,
   type Line,
   type Phase,
 } from "./live";
+import type { HandoffPacket } from "../../packages/shared";
 import {
   agentLabel,
   createSession as createRelaySession,
-  createSessionBody,
   modelFor,
   otherAgent,
   switchAgent as switchRelayAgent,
   type AgentId,
-  type ApiSession,
   type RelayApi,
 } from "./controlFlow";
 
@@ -105,7 +105,7 @@ function Terminal({ lines, phase }: { lines: Line[]; phase: Phase }) {
           <i />
         </span>
         <span className="terminal-title">relay — zsh</span>
-        <span className="terminal-branch">syed/control-tower-ui</span>
+        <span className="terminal-branch">relay session</span>
       </header>
       <div className="terminal-body" ref={bodyRef}>
         {lines.map((line, i) => (
@@ -128,6 +128,8 @@ function Rail({
   migration,
   sessionLabel = "session 7f3a",
   controls,
+  taskGoal,
+  packet,
 }: {
   phase: Phase;
   handoffDone: boolean;
@@ -137,11 +139,13 @@ function Rail({
   migration?: "pass" | "fail" | "pending";
   sessionLabel?: string;
   controls?: ReactNode;
+  taskGoal: string;
+  packet: HandoffPacket | null;
 }) {
   const isCodex = agentName ? agentName === "codex" : phase === "resumed";
   const agent = isCodex
-    ? { name: "Codex", model: "GPT-5", letter: "X", tone: "codex" }
-    : { name: "Claude", model: "Opus 4.8", letter: "C", tone: "claude" };
+    ? { name: "Codex", letter: "X", tone: "codex" }
+    : { name: "Claude", letter: "C", tone: "claude" };
 
   const status =
     phase === "switching"
@@ -175,22 +179,26 @@ function Rail({
 
         <div className="block">
           <small>TASK</small>
-          <p>{demoPacket.task.goal}</p>
+          <p>{taskGoal}</p>
         </div>
 
         <div className={`packet ${handoffDone ? "shown" : ""}`}>
           <div className="packet-top">
             <span>
-              Claude <Icon name="arrow" size={12} /> Codex
+              {packet?.sourceAgent === "codex" ? "Codex" : "Claude"}{" "}
+              <Icon name="arrow" size={12} />{" "}
+              {packet?.targetAgent === "claude" ? "Claude" : "Codex"}
             </span>
-            <b>−93%</b>
+            <b>−{Math.round(packet?.metrics.reductionPercent ?? 93)}%</b>
           </div>
           <div className="packet-meta">
             <span>
-              <Icon name="file" size={12} /> 2 files
+              <Icon name="file" size={12} />{" "}
+              {packet?.evidence.changedFiles.length ?? 2} files
             </span>
             <span>
-              <Icon name="spark" size={12} /> 1,218 tok
+              <Icon name="spark" size={12} />{" "}
+              {(packet?.metrics.packetTokens ?? 1218).toLocaleString()} tok
             </span>
             <span>
               <Icon name="shield" size={12} /> memory kept
@@ -207,8 +215,21 @@ function Rail({
             TypeScript
           </div>
           <div className="check">
-            <span className={migrationOk ? "ok" : "bad"}>
-              <Icon name={migrationOk ? "check" : "cross"} size={12} />
+            <span
+              className={
+                migration === "pending" ? "pending" : migrationOk ? "ok" : "bad"
+              }
+            >
+              <Icon
+                name={
+                  migration === "pending"
+                    ? "spark"
+                    : migrationOk
+                      ? "check"
+                      : "cross"
+                }
+                size={12}
+              />
             </span>
             Migration test
           </div>
@@ -219,10 +240,14 @@ function Rail({
 
       {!live && (
         <footer className="rail-foot">
-          <button className="switch" onClick={onSwitch} disabled={phase !== "working"}>
+          <button
+            className="switch demo"
+            onClick={onSwitch}
+            disabled={phase !== "working"}
+          >
             {phase === "working" && (
               <>
-                <Icon name="spark" size={14} /> Run demo handoff
+                <Icon name="spark" size={14} /> Preview handoff
               </>
             )}
             {phase === "switching" && (
@@ -308,7 +333,11 @@ export function App() {
   const isLive = currentSessionId !== null;
 
   // Live mode: events come from the server broadcaster.
-  const { events, status } = useRelayStream(currentSessionId, wsBase);
+  const { events, status } = useRelayStream(
+    currentSessionId,
+    wsBase,
+    apiBase
+  );
 
   // Demo mode: scripted Claude → Codex handoff (works offline).
   const [demoPhase, setDemoPhase] = useState<Phase>("working");
@@ -353,13 +382,6 @@ export function App() {
     return sessionId;
   }
 
-  async function createLiveSession(): Promise<void> {
-    await runControl("create", async () => {
-      const sessionId = await createSessionRequest();
-      setControlMessage(`session ${sessionId}`);
-    });
-  }
-
   async function ensureLiveSession(): Promise<string> {
     return currentSessionId ?? createSessionRequest();
   }
@@ -380,10 +402,24 @@ export function App() {
     });
   }
 
-  async function startAgent(agent: AgentId): Promise<void> {
-    await sessionAction(`start ${agent}`, `/${agent}/start`, {
-      model: modelFor(agent, { claude: claudeModel, codex: codexModel }),
-      prompt,
+  async function startNewSession(): Promise<void> {
+    await runControl(`start ${initialAgent}`, async () => {
+      const sessionId = await createSessionRequest();
+      await requestJson(
+        apiBase,
+        `/api/sessions/${sessionId}/${initialAgent}/start`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            model: modelFor(initialAgent, {
+              claude: claudeModel,
+              codex: codexModel,
+            }),
+            prompt,
+          }),
+        }
+      );
+      setControlMessage(`${agentLabel(initialAgent)} running`);
     });
   }
 
@@ -419,126 +455,140 @@ export function App() {
   const phase: Phase = isLive ? derivePhase(events) : demoPhase;
   const lines = isLive ? liveLines : demoLines;
   const handoffDone = isLive ? packetReady(events) : demoPhase !== "working";
+  const packet = isLive ? latestHandoffPacket(events) : demoPacket;
   const selectedActiveAgent = isLive && events.length ? activeAgent(events) : initialAgent;
   const switchTarget = otherAgent(selectedActiveAgent);
   const controls = (
     <div className="controls" aria-label="Session controls">
-      <label className="field">
-        <span>API</span>
-        <input
-          value={apiBase}
-          onChange={(event) => setApiBase(event.target.value)}
-          disabled={pendingAction !== null}
-        />
-      </label>
-      <label className="field">
-        <span>Workspace</span>
-        <input
-          value={workspaceDir}
-          onChange={(event) => setWorkspaceDir(event.target.value)}
-          disabled={isLive || pendingAction !== null}
-        />
-      </label>
-      <label className="field">
-        <span>Goal</span>
-        <textarea
-          value={goal}
-          onChange={(event) => setGoal(event.target.value)}
-          disabled={isLive || pendingAction !== null}
-          rows={3}
-        />
-      </label>
-      <label className="field">
-        <span>Verify</span>
-        <input
-          value={verificationCommand}
-          onChange={(event) => setVerificationCommand(event.target.value)}
-          disabled={isLive || pendingAction !== null}
-        />
-      </label>
-      <button
-        className="action primary"
-        onClick={createLiveSession}
-        disabled={isLive || pendingAction !== null}
-      >
-        {pendingAction === "create" ? <span className="spinner" /> : <Icon name="spark" size={14} />}
-        Create session
-      </button>
-      <label className="field">
-        <span>Initial agent</span>
-        <select
-          value={initialAgent}
-          onChange={(event) => setInitialAgent(event.target.value as AgentId)}
-          disabled={isLive || pendingAction !== null}
-        >
-          <option value="claude">Claude</option>
-          <option value="codex">Codex</option>
-        </select>
-      </label>
-      <label className="field">
-        <span>Claude model</span>
-        <input
-          value={claudeModel}
-          onChange={(event) => setClaudeModel(event.target.value)}
-          disabled={pendingAction !== null}
-        />
-      </label>
-      <label className="field">
-        <span>Prompt</span>
-        <textarea
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          disabled={pendingAction !== null}
-          rows={3}
-        />
-      </label>
-      <div className="action-grid">
-        <button
-          className="action"
-          onClick={() => startAgent(initialAgent)}
-          disabled={pendingAction !== null}
-        >
-          Start {agentLabel(initialAgent)}
-        </button>
-        <button
-          className="action"
-          onClick={() => switchAgent(switchTarget)}
-          disabled={pendingAction !== null}
-        >
-          Switch to {agentLabel(switchTarget)}
-        </button>
-      </div>
-      <label className="field">
-        <span>Codex model</span>
-        <input
-          value={codexModel}
-          onChange={(event) => setCodexModel(event.target.value)}
-          disabled={pendingAction !== null}
-        />
-      </label>
-      <button
-        className="action"
-        onClick={() => sessionAction("verify", "/verify")}
-        disabled={!isLive || pendingAction !== null}
-      >
-        Verify
-      </button>
-      <label className="field">
-        <span>Input</span>
-        <textarea
-          value={inputText}
-          onChange={(event) => setInputText(event.target.value)}
-          disabled={!isLive || pendingAction !== null}
-          rows={2}
-        />
-      </label>
-      <button
-        className="action"
-        onClick={() => sessionAction("input", "/input", { data: `${inputText}\n` })}
-        disabled={!isLive || pendingAction !== null || inputText.trim().length === 0}
-      >
-        Send input
-      </button>
+      {!isLive ? (
+        <>
+          <label className="field">
+            <span>Goal</span>
+            <textarea
+              value={goal}
+              onChange={(event) => setGoal(event.target.value)}
+              disabled={pendingAction !== null}
+              rows={2}
+            />
+          </label>
+          <label className="field compact">
+            <span>Start with</span>
+            <select
+              value={initialAgent}
+              onChange={(event) =>
+                setInitialAgent(event.target.value as AgentId)
+              }
+              disabled={pendingAction !== null}
+            >
+              <option value="claude">Claude</option>
+              <option value="codex">Codex</option>
+            </select>
+          </label>
+          <button
+            className="action primary"
+            onClick={startNewSession}
+            disabled={pendingAction !== null}
+          >
+            {pendingAction?.startsWith("start") ? (
+              <span className="spinner light" />
+            ) : (
+              <Icon name="spark" size={14} />
+            )}
+            Start Relay
+          </button>
+          <details className="advanced">
+            <summary>Advanced</summary>
+            <div className="advanced-fields">
+              <label className="field">
+                <span>Workspace</span>
+                <input
+                  value={workspaceDir}
+                  onChange={(event) => setWorkspaceDir(event.target.value)}
+                  disabled={pendingAction !== null}
+                />
+              </label>
+              <label className="field">
+                <span>Verification</span>
+                <input
+                  value={verificationCommand}
+                  onChange={(event) =>
+                    setVerificationCommand(event.target.value)
+                  }
+                  disabled={pendingAction !== null}
+                />
+              </label>
+              <label className="field">
+                <span>Opening prompt</span>
+                <textarea
+                  value={prompt}
+                  onChange={(event) => setPrompt(event.target.value)}
+                  disabled={pendingAction !== null}
+                  rows={2}
+                />
+              </label>
+              <label className="field">
+                <span>Claude model</span>
+                <input
+                  value={claudeModel}
+                  onChange={(event) => setClaudeModel(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>Codex model</span>
+                <input
+                  value={codexModel}
+                  onChange={(event) => setCodexModel(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>API</span>
+                <input
+                  value={apiBase}
+                  onChange={(event) => setApiBase(event.target.value)}
+                />
+              </label>
+            </div>
+          </details>
+        </>
+      ) : (
+        <>
+          <div className="action-grid">
+            <button
+              className="action primary"
+              onClick={() => switchAgent(switchTarget)}
+              disabled={pendingAction !== null || phase === "switching"}
+            >
+              Switch to {agentLabel(switchTarget)}
+            </button>
+            <button
+              className="action"
+              onClick={() => sessionAction("verify", "/verify")}
+              disabled={pendingAction !== null || phase === "switching"}
+            >
+              Verify
+            </button>
+          </div>
+          <div className="input-row">
+            <input
+              value={inputText}
+              placeholder="Send input to the active agent"
+              onChange={(event) => setInputText(event.target.value)}
+              disabled={pendingAction !== null}
+            />
+            <button
+              className="action"
+              onClick={() =>
+                sessionAction("input", "/input", { data: `${inputText}\n` })
+              }
+              disabled={
+                pendingAction !== null || inputText.trim().length === 0
+              }
+            >
+              Send
+            </button>
+          </div>
+        </>
+      )}
       {controlMessage && <div className="control-message">{controlMessage}</div>}
     </div>
   );
@@ -556,6 +606,8 @@ export function App() {
           migration={isLive ? migrationState(events) : undefined}
           sessionLabel={isLive ? `session ${currentSessionId}` : "new session"}
           controls={controls}
+          taskGoal={goal}
+          packet={packet}
         />
       </div>
       <footer className="note">

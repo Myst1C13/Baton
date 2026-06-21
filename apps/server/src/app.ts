@@ -59,13 +59,17 @@ function sendJson(
   res.end(payload);
 }
 
-function corsHeaders(req: http.IncomingMessage): Record<string, string> {
+function corsHeaders(
+  req: http.IncomingMessage,
+  env: Env
+): Record<string, string> {
   const origin = req.headers.origin;
-  if (!origin) return {};
+  if (!origin || origin !== env.WEB_URL) return {};
   return {
-    "access-control-allow-origin": origin,
+    "access-control-allow-origin": env.WEB_URL,
     "access-control-allow-methods": "GET,POST,OPTIONS",
     "access-control-allow-headers": "content-type",
+    vary: "Origin",
   };
 }
 
@@ -77,7 +81,7 @@ async function route(
   api: ApiHandler
 ): Promise<void> {
   if (req.method === "OPTIONS") {
-    res.writeHead(204, corsHeaders(req));
+    res.writeHead(204, corsHeaders(req, _env));
     res.end();
     return;
   }
@@ -139,7 +143,7 @@ export function createAppRuntime(
   const api = createApiRouter({ sessions, orchestrator });
 
   const server = http.createServer((req, res) => {
-    for (const [name, value] of Object.entries(corsHeaders(req))) {
+    for (const [name, value] of Object.entries(corsHeaders(req, env))) {
       res.setHeader(name, value);
     }
     route(req, res, env, api).catch((err) => {
@@ -152,7 +156,10 @@ export function createAppRuntime(
         res.end();
         return;
       }
-      sendJson(res, statusCode, body, { ...corsHeaders(req), ...headers });
+      sendJson(res, statusCode, body, {
+        ...corsHeaders(req, env),
+        ...headers,
+      });
     });
   });
 

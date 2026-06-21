@@ -53,7 +53,7 @@ export const TERMINAL_STATES: readonly SessionState[] = ["completed", "failed"];
  */
 const BASE_TRANSITIONS: Record<SessionState, SessionState[]> = {
   created: ["claude_running", "codex_running"],
-  claude_running: ["handoff_building"],
+  claude_running: ["handoff_building", "verifying"],
   handoff_building: ["handoff_ready"],
   // A built packet can be picked up by Codex (the demo) or resumed on Claude.
   handoff_ready: ["codex_running", "claude_running"],

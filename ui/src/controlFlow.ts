@@ -1,4 +1,6 @@
-export type AgentId = "claude" | "codex";
+import type { AgentId } from "../../packages/shared";
+
+export type { AgentId } from "../../packages/shared";
 
 export type ApiSession = { id: string; state?: string };
 
