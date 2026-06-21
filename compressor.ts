@@ -159,7 +159,7 @@ Output the JSON object now.`;
 function extractJson(raw: string): unknown {
   let text = raw.trim();
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) text = fence[1].trim();
+  if (fence?.[1]) text = fence[1].trim();
   const start = text.indexOf("{");
   if (start === -1) throw new Error(`No JSON object found:\n${raw}`);
   let depth = 0;

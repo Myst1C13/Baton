@@ -134,6 +134,15 @@ export function eventLine(e: RelayEventT): Line {
 /** Phase derived from the events seen so far. */
 export function derivePhase(events: RelayEventT[]): Phase {
   const types = new Set(events.map((e) => e.type));
+  const agents = new Set(
+    events
+      .map((e) => {
+        if (e.agent === "claude" || e.agent === "codex") return e.agent;
+        return provider(e.payload, "provider");
+      })
+      .filter((agent): agent is "claude" | "codex" => agent === "claude" || agent === "codex")
+  );
+  if (agents.size > 1) return "resumed";
   if (types.has("agent.switched") || types.has("session.completed")) return "resumed";
   if (
     types.has("handoff.started") ||
@@ -168,6 +177,10 @@ export function activeAgent(events: RelayEventT[]): "claude" | "codex" {
     if (e.type === "agent.switched") {
       const to = provider(e.payload, "to");
       if (to === "codex" || to === "claude") return to;
+    }
+    if (e.type === "agent.started") {
+      const started = provider(e.payload, "provider");
+      if (started === "codex" || started === "claude") return started;
     }
     if (e.agent === "codex" || e.agent === "claude") return e.agent;
   }

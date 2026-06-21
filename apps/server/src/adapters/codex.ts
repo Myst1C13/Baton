@@ -32,10 +32,12 @@ export class CodexAdapter extends ProcessAgentAdapter {
       supportsInput: true,
       supportsResume: true,
       models: this.config.models ?? DEFAULT_MODELS,
+      contextWindow: 272_000,
     };
   }
 
   protected plan(opts: AgentStartOptions): AgentLaunchPlan {
+    const prompt = this.composePrompt(opts);
     const args = [
       "exec",
       "--skip-git-repo-check",
@@ -43,9 +45,30 @@ export class CodexAdapter extends ProcessAgentAdapter {
       ...codexModelArg(opts.model),
       "-C",
       opts.cwd,
-      this.composePrompt(opts), // Codex takes the prompt as a positional arg
+      prompt, // Codex takes the prompt as a positional arg
     ];
-    return { command: this.executable, args };
+    return { command: this.executable, args, promptForUsage: prompt };
+  }
+
+  protected observeTerminalChunk(chunk: string): void {
+    for (const line of chunk.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("{")) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+      if (!parsed || typeof parsed !== "object") continue;
+      const usage = (parsed as { usage?: unknown }).usage;
+      if (!usage || typeof usage !== "object") continue;
+      const input = (usage as { input_tokens?: unknown }).input_tokens;
+      const output = (usage as { output_tokens?: unknown }).output_tokens;
+      if (typeof input === "number" && typeof output === "number") {
+        this.observedTokens = input + output;
+      }
+    }
   }
 }
 

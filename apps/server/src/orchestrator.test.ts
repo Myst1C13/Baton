@@ -47,6 +47,14 @@ const newSession = (sessions: SessionManager, verify = "exit 0") =>
     workspaceDir: process.cwd(),
   });
 
+async function waitFor(fn: () => boolean, timeoutMs = 500): Promise<void> {
+  const started = Date.now();
+  while (!fn()) {
+    if (Date.now() - started > timeoutMs) throw new Error("waitFor timed out");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 test("Claude → handoff → Codex → verify drives the full state machine", async () => {
   const { orch, sessions, store, broadcast } = makeOrchestrator();
   const s = newSession(sessions);
@@ -66,6 +74,7 @@ test("Claude → handoff → Codex → verify drives the full state machine", as
 
   await orch.startCodex(s.id);
   assert.equal(sessions.get(s.id).state, "codex_running");
+  assert.ok(broadcast.some((e) => e.type === "agent.switched"));
 
   const result = await orch.verify(s.id);
   assert.equal(result.passed, true);
@@ -79,6 +88,20 @@ test("Claude → handoff → Codex → verify drives the full state machine", as
   assert.doesNotThrow(() => HandoffPacket.parse(handoffEvent.payload.packet));
   assert.ok(events.some((e) => e.type === "test.passed"));
   assert.ok(broadcast.length > 0, "events were broadcast");
+});
+
+test("Codex can be the initial live agent", async () => {
+  const { orch, sessions } = makeOrchestrator();
+  const s = sessions.create({
+    goal: "Fix the failing auth redirect",
+    verificationCommand: "exit 0",
+    workspaceDir: process.cwd(),
+    sourceAgent: "codex",
+    targetAgent: "claude",
+  });
+
+  await orch.startCodex(s.id, { prompt: "start in codex" });
+  assert.equal(sessions.get(s.id).state, "codex_running");
 });
 
 test("a failing verification moves the session to failed", async () => {
@@ -102,6 +125,38 @@ test("a handoff-builder failure leaves the session in failed, not stuck", async 
   await orch.startClaude(s.id);
   await assert.rejects(() => orch.buildHandoff(s.id), /builder boom/);
   assert.equal(sessions.get(s.id).state, "failed");
+});
+
+test("rate-limit output emits limit.detected and automatically builds a handoff", async () => {
+  const { orch, sessions, store, broadcast } = makeOrchestrator();
+  const s = newSession(sessions);
+  await orch.startClaude(s.id);
+
+  orch.sendInput(s.id, "API error 429 rate limit reached\n");
+
+  await waitFor(() => sessions.get(s.id).state === "handoff_ready");
+  const packet = await store.loadHandoff(s.id);
+  assert.equal(packet?.trigger, "rate_limit");
+  assert.ok(broadcast.some((e) => e.type === "limit.detected"));
+});
+
+test("context pressure emits limit.detected and automatically builds a handoff", async () => {
+  const { orch, sessions, store, broadcast } = makeOrchestrator({
+    contextPressureThreshold: 0,
+  });
+  const s = newSession(sessions);
+  await orch.startClaude(s.id);
+
+  orch.sendInput(s.id, "any output trips the zero threshold\n");
+
+  await waitFor(() => sessions.get(s.id).state === "handoff_ready");
+  const packet = await store.loadHandoff(s.id);
+  assert.equal(packet?.trigger, "context_full");
+  assert.ok(
+    broadcast.some(
+      (e) => e.type === "limit.detected" && e.payload.reason === "context_full"
+    )
+  );
 });
 
 test("getDiff returns git facts for the workspace", async () => {

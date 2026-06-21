@@ -14,6 +14,7 @@ import type {
   AgentCapabilities,
   AgentStartOptions,
   AgentStatus,
+  AgentUsage,
   RelayEventSink,
 } from "./types";
 
@@ -41,6 +42,7 @@ export class FakeAgentAdapter implements AgentAdapter {
       supportsInput: opts.supportsInput ?? true,
       supportsResume: opts.supportsResume ?? true,
       models: opts.models ?? ["fake-1"],
+      contextWindow: 200_000,
     };
   }
 
@@ -50,6 +52,10 @@ export class FakeAgentAdapter implements AgentAdapter {
 
   status(): AgentStatus {
     return this.state;
+  }
+
+  usage(): AgentUsage {
+    return { tokens: this.received.join("").length, window: this.caps.contextWindow ?? 200_000 };
   }
 
   async start(opts: AgentStartOptions, onEvent: RelayEventSink): Promise<void> {

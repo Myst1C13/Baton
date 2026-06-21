@@ -37,6 +37,7 @@ export const TERMINAL_STATES: readonly SessionState[] = ["completed", "failed"];
  * Allowed transitions, excluding failure edges (added universally below).
  *
  *   created ─▶ claude_running ─▶ handoff_building ─▶ handoff_ready
+ *          └▶ codex_running  ───┘
  *                                       ▲                  │
  *                                       │            ┌─────┴─────┐
  *                                       │            ▼           ▼
@@ -51,7 +52,7 @@ export const TERMINAL_STATES: readonly SessionState[] = ["completed", "failed"];
  * Plus: any non-terminal state may transition to `failed` (crash / hard error).
  */
 const BASE_TRANSITIONS: Record<SessionState, SessionState[]> = {
-  created: ["claude_running"],
+  created: ["claude_running", "codex_running"],
   claude_running: ["handoff_building"],
   handoff_building: ["handoff_ready"],
   // A built packet can be picked up by Codex (the demo) or resumed on Claude.

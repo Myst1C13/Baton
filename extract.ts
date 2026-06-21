@@ -93,7 +93,7 @@ function parseChangedFiles(porcelain: string): string[] {
     .map((line) => {
       const pathPart = line.replace(/^\s*[MADRCU?!]{1,2}\s+/, "");
       const renameSplit = pathPart.split(" -> ");
-      return renameSplit[renameSplit.length - 1].trim();
+      return (renameSplit.at(-1) ?? "").trim();
     })
     .filter((f) => /\.(ts|tsx)$/.test(f));
 }

@@ -26,17 +26,19 @@ export class ClaudeAdapter extends ProcessAgentAdapter {
       supportsInput: true,
       supportsResume: true,
       models: this.config.models ?? DEFAULT_MODELS,
+      contextWindow: 200_000,
     };
   }
 
   protected plan(opts: AgentStartOptions): AgentLaunchPlan {
     const args = ["-p", "--output-format", "json"];
     if (opts.model) args.push("--model", opts.model);
+    const prompt = this.composePrompt(opts);
     return {
       command: this.executable,
       args,
       // Claude consumes its prompt on stdin.
-      stdinPrompt: this.composePrompt(opts),
+      stdinPrompt: prompt,
     };
   }
 }

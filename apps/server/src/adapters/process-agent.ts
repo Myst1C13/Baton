@@ -28,8 +28,10 @@ import type {
   AgentCapabilities,
   AgentStartOptions,
   AgentStatus,
+  AgentUsage,
   RelayEventSink,
 } from "./types";
+import type { RelayEvent } from "../../../../packages/shared/events";
 
 /** How a concrete adapter wants the process launched. */
 export interface AgentLaunchPlan {
@@ -37,6 +39,8 @@ export interface AgentLaunchPlan {
   args: string[];
   /** Written to the child's stdin right after start (e.g. Claude's prompt). */
   stdinPrompt?: string;
+  /** Exact prompt text used for token estimation when it is not stdinPrompt. */
+  promptForUsage?: string;
 }
 
 export interface ProcessAgentConfig {
@@ -52,6 +56,9 @@ export abstract class ProcessAgentAdapter implements AgentAdapter {
   protected handle: RelayProcessHandle | null = null;
   protected state: AgentStatus = "idle";
   protected sessionId = "";
+  protected outputChars = 0;
+  protected promptChars = 0;
+  protected observedTokens: number | null = null;
 
   /** The provider id stamped onto every event. */
   abstract readonly agent: AgentId;
@@ -73,6 +80,16 @@ export abstract class ProcessAgentAdapter implements AgentAdapter {
     return this.state;
   }
 
+  usage(): AgentUsage {
+    const tokens =
+      this.observedTokens ??
+      Math.ceil((this.promptChars + this.outputChars) / 4);
+    return {
+      tokens,
+      window: this.capabilities().contextWindow ?? 200_000,
+    };
+  }
+
   async start(opts: AgentStartOptions, onEvent: RelayEventSink): Promise<void> {
     if (this.state === "starting" || this.state === "running") {
       throw new Error(`${this.agent} adapter is already started.`);
@@ -83,6 +100,13 @@ export abstract class ProcessAgentAdapter implements AgentAdapter {
     let plan: AgentLaunchPlan;
     try {
       plan = this.plan(opts); // may read the manifest — throws before spawning
+      this.promptChars = (plan.promptForUsage ?? plan.stdinPrompt ?? opts.prompt ?? "").length;
+      this.outputChars = 0;
+      this.observedTokens = null;
+      const sink: RelayEventSink = (event) => {
+        this.observeEvent(event);
+        onEvent(event);
+      };
       this.handle = startProcess(
         {
           sessionId: opts.sessionId,
@@ -92,7 +116,7 @@ export abstract class ProcessAgentAdapter implements AgentAdapter {
           agent: this.agent,
           env: this.config.env ? { ...process.env, ...this.config.env } : undefined,
         },
-        onEvent
+        sink
       );
     } catch (err) {
       this.state = "failed";
@@ -146,6 +170,17 @@ export abstract class ProcessAgentAdapter implements AgentAdapter {
     const base = opts.prompt ?? "";
     if (!opts.manifestPath) return base;
     return buildResumePrompt(this.readManifest(opts.manifestPath), base);
+  }
+
+  protected observeEvent(event: RelayEvent): void {
+    if (event.type !== "terminal.output") return;
+    const chunk = String((event.payload as { chunk?: unknown }).chunk ?? "");
+    this.outputChars += chunk.length;
+    this.observeTerminalChunk(chunk);
+  }
+
+  protected observeTerminalChunk(_chunk: string): void {
+    /* provider-specific adapters can parse native usage events */
   }
 }
 

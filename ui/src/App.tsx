@@ -10,6 +10,17 @@ import {
   type Line,
   type Phase,
 } from "./live";
+import {
+  agentLabel,
+  createSession as createRelaySession,
+  createSessionBody,
+  modelFor,
+  otherAgent,
+  switchAgent as switchRelayAgent,
+  type AgentId,
+  type ApiSession,
+  type RelayApi,
+} from "./controlFlow";
 
 type IconName = "arrow" | "check" | "cross" | "spark" | "shield" | "file";
 
@@ -116,6 +127,7 @@ function Rail({
   agentName,
   migration,
   sessionLabel = "session 7f3a",
+  controls,
 }: {
   phase: Phase;
   handoffDone: boolean;
@@ -124,6 +136,7 @@ function Rail({
   agentName?: "claude" | "codex";
   migration?: "pass" | "fail" | "pending";
   sessionLabel?: string;
+  controls?: ReactNode;
 }) {
   const isCodex = agentName ? agentName === "codex" : phase === "resumed";
   const agent = isCodex
@@ -200,52 +213,102 @@ function Rail({
             Migration test
           </div>
         </div>
+
+        {controls}
       </div>
 
-      <footer className="rail-foot">
-        <button
-          className="switch"
-          onClick={onSwitch}
-          disabled={live || phase !== "working"}
-        >
-          {phase === "working" && (
-            <>
-              {live ? null : <Icon name="spark" size={14} />}{" "}
-              {live ? "Live · waiting for handoff" : "Create handoff"}
-            </>
-          )}
-          {phase === "switching" && (
-            <>
-              <span className="spinner" /> {live ? "Relaying…" : "Relaying…"}
-            </>
-          )}
-          {phase === "resumed" && (
-            <>
-              <Icon name="check" size={14} /> Handoff complete
-            </>
-          )}
-        </button>
-      </footer>
+      {!live && (
+        <footer className="rail-foot">
+          <button className="switch" onClick={onSwitch} disabled={phase !== "working"}>
+            {phase === "working" && (
+              <>
+                <Icon name="spark" size={14} /> Run demo handoff
+              </>
+            )}
+            {phase === "switching" && (
+              <>
+                <span className="spinner" /> Relaying…
+              </>
+            )}
+            {phase === "resumed" && (
+              <>
+                <Icon name="check" size={14} /> Handoff complete
+              </>
+            )}
+          </button>
+        </footer>
+      )}
     </aside>
   );
 }
 
 // ?live=<sessionId>&ws=<wsBase> switches the UI to the real broadcaster.
-function liveConfig(): { sessionId: string | null; base: string } {
-  if (typeof window === "undefined") return { sessionId: null, base: "ws://127.0.0.1:4000" };
+function liveConfig(): { sessionId: string | null; base: string; api: string } {
+  if (typeof window === "undefined") {
+    return {
+      sessionId: null,
+      base: "ws://127.0.0.1:4000",
+      api: "http://127.0.0.1:4000",
+    };
+  }
   const params = new URLSearchParams(window.location.search);
+  const base = params.get("ws") ?? "ws://127.0.0.1:4000";
   return {
     sessionId: params.get("live"),
-    base: params.get("ws") ?? "ws://127.0.0.1:4000",
+    base,
+    api: params.get("api") ?? base.replace(/^ws/i, "http"),
   };
 }
 
+async function requestJson<T>(
+  apiBase: string,
+  path: string,
+  init: RequestInit = {}
+): Promise<T> {
+  const response = await fetch(`${apiBase}${path}`, {
+    ...init,
+    headers: {
+      "content-type": "application/json",
+      ...(init.headers ?? {}),
+    },
+  });
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!response.ok) {
+    const message =
+      data?.error?.message ?? data?.message ?? `${response.status} ${response.statusText}`;
+    throw new Error(message);
+  }
+  return data as T;
+}
+
+function updateLiveUrl(sessionId: string, base: string, api: string): void {
+  const url = new URL(window.location.href);
+  url.searchParams.set("live", sessionId);
+  url.searchParams.set("ws", base);
+  url.searchParams.set("api", api);
+  window.history.replaceState(null, "", url);
+}
+
 export function App() {
-  const { sessionId, base } = liveConfig();
-  const isLive = sessionId !== null;
+  const config = liveConfig();
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(config.sessionId);
+  const [wsBase] = useState(config.base);
+  const [apiBase, setApiBase] = useState(config.api);
+  const [goal, setGoal] = useState(demoPacket.task.goal);
+  const [verificationCommand, setVerificationCommand] = useState("npm test");
+  const [workspaceDir, setWorkspaceDir] = useState("demo-repo");
+  const [prompt, setPrompt] = useState("Fix the migration bug. Run the tests.");
+  const [inputText, setInputText] = useState("");
+  const [initialAgent, setInitialAgent] = useState<AgentId>("claude");
+  const [claudeModel, setClaudeModel] = useState("claude-sonnet-4-6");
+  const [codexModel, setCodexModel] = useState("gpt-5-codex");
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [controlMessage, setControlMessage] = useState("");
+  const isLive = currentSessionId !== null;
 
   // Live mode: events come from the server broadcaster.
-  const { events, status } = useRelayStream(sessionId, base);
+  const { events, status } = useRelayStream(currentSessionId, wsBase);
 
   // Demo mode: scripted Claude → Codex handoff (works offline).
   const [demoPhase, setDemoPhase] = useState<Phase>("working");
@@ -262,6 +325,82 @@ export function App() {
     });
   }
 
+  async function runControl(action: string, work: () => Promise<void>): Promise<void> {
+    setPendingAction(action);
+    setControlMessage("");
+    try {
+      await work();
+    } catch (err) {
+      setControlMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  const api: RelayApi = {
+    requestJson: (path, init) => requestJson(apiBase, path, init),
+  };
+
+  async function createSessionRequest(): Promise<string> {
+    const sessionId = await createRelaySession(api, {
+        goal,
+        verificationCommand,
+        workspaceDir,
+        initialAgent,
+    });
+    setCurrentSessionId(sessionId);
+    updateLiveUrl(sessionId, wsBase, apiBase);
+    return sessionId;
+  }
+
+  async function createLiveSession(): Promise<void> {
+    await runControl("create", async () => {
+      const sessionId = await createSessionRequest();
+      setControlMessage(`session ${sessionId}`);
+    });
+  }
+
+  async function ensureLiveSession(): Promise<string> {
+    return currentSessionId ?? createSessionRequest();
+  }
+
+  async function sessionAction(
+    action: string,
+    path: string,
+    body?: Record<string, unknown>
+  ): Promise<void> {
+    await runControl(action, async () => {
+      const sessionId = await ensureLiveSession();
+      await requestJson(apiBase, `/api/sessions/${sessionId}${path}`, {
+        method: "POST",
+        body: body ? JSON.stringify(body) : "{}",
+      });
+      setControlMessage(action);
+      if (action === "input") setInputText("");
+    });
+  }
+
+  async function startAgent(agent: AgentId): Promise<void> {
+    await sessionAction(`start ${agent}`, `/${agent}/start`, {
+      model: modelFor(agent, { claude: claudeModel, codex: codexModel }),
+      prompt,
+    });
+  }
+
+  async function switchAgent(target: AgentId): Promise<void> {
+    await runControl(`switch to ${target}`, async () => {
+      const sessionId = await ensureLiveSession();
+      await switchRelayAgent(api, {
+        sessionId,
+        initialAgent,
+        target,
+        models: { claude: claudeModel, codex: codexModel },
+        prompt,
+      });
+      setControlMessage(`${target} running`);
+    });
+  }
+
   // Resolve what the panels render, from whichever mode is active.
   const liveLines: Line[] = events.length
     ? events.map(eventLine)
@@ -270,16 +409,139 @@ export function App() {
           kind: "muted",
           value:
             status === "open"
-              ? `connected · waiting for events on ${sessionId}…`
+              ? `connected · waiting for events on ${currentSessionId}…`
               : status === "error" || status === "closed"
-                ? `broadcaster unavailable (${base}) — start the server`
-                : `connecting to ${base}…`,
+                ? `broadcaster unavailable (${wsBase}) — start the server`
+                : `connecting to ${wsBase}…`,
         },
       ];
 
   const phase: Phase = isLive ? derivePhase(events) : demoPhase;
   const lines = isLive ? liveLines : demoLines;
   const handoffDone = isLive ? packetReady(events) : demoPhase !== "working";
+  const selectedActiveAgent = isLive && events.length ? activeAgent(events) : initialAgent;
+  const switchTarget = otherAgent(selectedActiveAgent);
+  const controls = (
+    <div className="controls" aria-label="Session controls">
+      <label className="field">
+        <span>API</span>
+        <input
+          value={apiBase}
+          onChange={(event) => setApiBase(event.target.value)}
+          disabled={pendingAction !== null}
+        />
+      </label>
+      <label className="field">
+        <span>Workspace</span>
+        <input
+          value={workspaceDir}
+          onChange={(event) => setWorkspaceDir(event.target.value)}
+          disabled={isLive || pendingAction !== null}
+        />
+      </label>
+      <label className="field">
+        <span>Goal</span>
+        <textarea
+          value={goal}
+          onChange={(event) => setGoal(event.target.value)}
+          disabled={isLive || pendingAction !== null}
+          rows={3}
+        />
+      </label>
+      <label className="field">
+        <span>Verify</span>
+        <input
+          value={verificationCommand}
+          onChange={(event) => setVerificationCommand(event.target.value)}
+          disabled={isLive || pendingAction !== null}
+        />
+      </label>
+      <button
+        className="action primary"
+        onClick={createLiveSession}
+        disabled={isLive || pendingAction !== null}
+      >
+        {pendingAction === "create" ? <span className="spinner" /> : <Icon name="spark" size={14} />}
+        Create session
+      </button>
+      <label className="field">
+        <span>Initial agent</span>
+        <select
+          value={initialAgent}
+          onChange={(event) => setInitialAgent(event.target.value as AgentId)}
+          disabled={isLive || pendingAction !== null}
+        >
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+        </select>
+      </label>
+      <label className="field">
+        <span>Claude model</span>
+        <input
+          value={claudeModel}
+          onChange={(event) => setClaudeModel(event.target.value)}
+          disabled={pendingAction !== null}
+        />
+      </label>
+      <label className="field">
+        <span>Prompt</span>
+        <textarea
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+          disabled={pendingAction !== null}
+          rows={3}
+        />
+      </label>
+      <div className="action-grid">
+        <button
+          className="action"
+          onClick={() => startAgent(initialAgent)}
+          disabled={pendingAction !== null}
+        >
+          Start {agentLabel(initialAgent)}
+        </button>
+        <button
+          className="action"
+          onClick={() => switchAgent(switchTarget)}
+          disabled={pendingAction !== null}
+        >
+          Switch to {agentLabel(switchTarget)}
+        </button>
+      </div>
+      <label className="field">
+        <span>Codex model</span>
+        <input
+          value={codexModel}
+          onChange={(event) => setCodexModel(event.target.value)}
+          disabled={pendingAction !== null}
+        />
+      </label>
+      <button
+        className="action"
+        onClick={() => sessionAction("verify", "/verify")}
+        disabled={!isLive || pendingAction !== null}
+      >
+        Verify
+      </button>
+      <label className="field">
+        <span>Input</span>
+        <textarea
+          value={inputText}
+          onChange={(event) => setInputText(event.target.value)}
+          disabled={!isLive || pendingAction !== null}
+          rows={2}
+        />
+      </label>
+      <button
+        className="action"
+        onClick={() => sessionAction("input", "/input", { data: `${inputText}\n` })}
+        disabled={!isLive || pendingAction !== null || inputText.trim().length === 0}
+      >
+        Send input
+      </button>
+      {controlMessage && <div className="control-message">{controlMessage}</div>}
+    </div>
+  );
 
   return (
     <main className="shell">
@@ -292,7 +554,8 @@ export function App() {
           live={isLive}
           agentName={isLive ? activeAgent(events) : undefined}
           migration={isLive ? migrationState(events) : undefined}
-          sessionLabel={isLive ? `session ${sessionId}` : "session 7f3a"}
+          sessionLabel={isLive ? `session ${currentSessionId}` : "new session"}
+          controls={controls}
         />
       </div>
       <footer className="note">

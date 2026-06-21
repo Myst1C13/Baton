@@ -19,7 +19,7 @@ import { SessionManager } from "./session-manager";
 import {
   Orchestrator,
   InMemoryEventStore,
-  fallbackCreateHandoff,
+  compressorCreateHandoff,
   type EventStore,
 } from "./orchestrator";
 import { ClaudeAdapter, CodexAdapter } from "./adapters";
@@ -59,6 +59,16 @@ function sendJson(
   res.end(payload);
 }
 
+function corsHeaders(req: http.IncomingMessage): Record<string, string> {
+  const origin = req.headers.origin;
+  if (!origin) return {};
+  return {
+    "access-control-allow-origin": origin,
+    "access-control-allow-methods": "GET,POST,OPTIONS",
+    "access-control-allow-headers": "content-type",
+  };
+}
+
 /** Route a single request. Throws on any error; the handler below catches it. */
 async function route(
   req: http.IncomingMessage,
@@ -66,6 +76,11 @@ async function route(
   _env: Env,
   api: ApiHandler
 ): Promise<void> {
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, corsHeaders(req));
+    res.end();
+    return;
+  }
   // Parse just the pathname so query strings don't break exact matches.
   const { pathname } = new URL(req.url ?? "/", "http://localhost");
 
@@ -110,7 +125,7 @@ export function createAppRuntime(
         claude: () => new ClaudeAdapter(),
         codex: () => new CodexAdapter(),
       },
-      createHandoff: fallbackCreateHandoff,
+      createHandoff: compressorCreateHandoff,
       // Live events flow to any WS clients subscribed to the session.
       onEvent: (event) => {
         try {
@@ -124,6 +139,9 @@ export function createAppRuntime(
   const api = createApiRouter({ sessions, orchestrator });
 
   const server = http.createServer((req, res) => {
+    for (const [name, value] of Object.entries(corsHeaders(req))) {
+      res.setHeader(name, value);
+    }
     route(req, res, env, api).catch((err) => {
       const { statusCode, body, headers, unexpected } = toErrorResponse(err);
       if (unexpected) {
@@ -134,7 +152,7 @@ export function createAppRuntime(
         res.end();
         return;
       }
-      sendJson(res, statusCode, body, headers);
+      sendJson(res, statusCode, body, { ...corsHeaders(req), ...headers });
     });
   });
 
