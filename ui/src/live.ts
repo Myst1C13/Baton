@@ -53,7 +53,10 @@ export function eventLine(e: RelayEventT): Line {
   const p = e.payload;
   switch (e.type) {
     case "session.started":
-      return { kind: "prompt", value: `$ relay start — ${e.agent ?? "claude"}` };
+      return {
+        kind: "prompt",
+        value: `$ relay start — ${provider(p, "provider") ?? e.agent ?? "claude"}`,
+      };
     case "agent.started":
       return { kind: "prompt", value: `$ ${e.agent ?? "agent"} running` };
     case "process.started":
@@ -127,6 +130,11 @@ export function eventLine(e: RelayEventT): Line {
       return {
         kind: "relay",
         value: `↪ relay: switched ${provider(p, "from") ?? "claude"} → ${provider(p, "to") ?? "codex"}`,
+      };
+    case "handoff.failed":
+      return {
+        kind: "fail",
+        value: `✖ relay handoff failed${s(p, "error") ? ` — ${s(p, "error")}` : ""}`,
       };
     case "session.completed":
       return { kind: "pass", value: "✔ session complete" };

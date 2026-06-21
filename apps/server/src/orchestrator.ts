@@ -170,12 +170,23 @@ export class Orchestrator {
         latestFailure: rt.latestFailure,
         relevantTerminalExcerpt: rt.terminal,
       });
+      this.emit(sessionId, "workspace.frozen", {
+        changedFiles: evidence.changedFiles.length,
+        branch: evidence.branch,
+      });
 
       const targetAgent: AgentId = rt.provider === "claude" ? "codex" : "claude";
+      this.emit(sessionId, "agent.routed", {
+        from: rt.provider,
+        to: targetAgent,
+      });
       const usage = rt.adapter?.usage() ?? {
         tokens: approxTokens(JSON.stringify(evidence)),
         window: 200_000,
       };
+      this.emit(sessionId, "handoff.distilling", {
+        sourceTokens: usage.tokens,
+      });
       const packet = HandoffPacket.parse(
         await this.deps.createHandoff(evidence, {
           sessionId,
@@ -199,6 +210,9 @@ export class Orchestrator {
       this.deps.sessions.transition(sessionId, "handoff_ready");
       return packet;
     } catch (err) {
+      this.emit(sessionId, "handoff.failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
       this.deps.sessions.transition(sessionId, "failed", {
         error: err instanceof Error ? err.message : String(err),
       });
@@ -276,6 +290,11 @@ export class Orchestrator {
       result.passed ? "completed" : "failed",
       result.passed ? undefined : { error: `verification failed (exit ${result.exitCode})` }
     );
+    if (result.passed) {
+      this.emit(sessionId, "session.completed", {
+        verificationCommand: session.verificationCommand,
+      });
+    }
     return result;
   }
 
@@ -316,6 +335,7 @@ export class Orchestrator {
     opts: { model?: string; prompt?: string; manifestPath?: string }
   ): Promise<void> {
     const session = this.deps.sessions.get(sessionId);
+    const startingSession = session.state === "created";
     const factory = this.deps.adapters[provider];
     if (!factory) throw new Error(`No adapter registered for "${provider}".`);
 
@@ -329,6 +349,10 @@ export class Orchestrator {
       limitDetected: false,
     };
     this.runtime.set(sessionId, rt);
+    if (startingSession) {
+      this.emit(sessionId, "session.started", { provider });
+    }
+    this.emit(sessionId, "agent.launching", { target: provider });
 
     try {
       await adapter.start(

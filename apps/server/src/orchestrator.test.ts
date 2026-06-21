@@ -87,6 +87,10 @@ test("Claude → handoff → Codex → verify drives the full state machine", as
   assert.ok(handoffEvent);
   assert.doesNotThrow(() => HandoffPacket.parse(handoffEvent.payload.packet));
   assert.ok(events.some((e) => e.type === "test.passed"));
+  assert.ok(events.some((e) => e.type === "workspace.frozen"));
+  assert.ok(events.some((e) => e.type === "agent.routed"));
+  assert.ok(events.some((e) => e.type === "handoff.distilling"));
+  assert.ok(events.some((e) => e.type === "session.completed"));
   assert.ok(broadcast.length > 0, "events were broadcast");
 });
 
@@ -116,7 +120,7 @@ test("a failing verification moves the session to failed", async () => {
 });
 
 test("a handoff-builder failure leaves the session in failed, not stuck", async () => {
-  const { orch, sessions } = makeOrchestrator({
+  const { orch, sessions, broadcast } = makeOrchestrator({
     createHandoff: () => {
       throw new Error("builder boom");
     },
@@ -125,6 +129,7 @@ test("a handoff-builder failure leaves the session in failed, not stuck", async 
   await orch.startClaude(s.id);
   await assert.rejects(() => orch.buildHandoff(s.id), /builder boom/);
   assert.equal(sessions.get(s.id).state, "failed");
+  assert.ok(broadcast.some((event) => event.type === "handoff.failed"));
 });
 
 test("rate-limit output automatically hands off and resumes the target", async () => {
