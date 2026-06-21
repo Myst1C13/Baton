@@ -55,6 +55,17 @@ const packet = await distill(evidence, meta);
 - **`meta: PacketMeta`** — the deterministic facts only you know (session, agents, trigger, live token count).
 - **Returns `Promise<HandoffPacket>`** (validated). **Never throws** — on any failure (model down, bad JSON) it returns a deterministic fallback packet (`metrics.confidence = 0.3`).
 
+For tests or embedded runtimes, an optional third argument can override the
+compression backend, model, and working directory without changing global env:
+
+```ts
+await distill(evidence, meta, {
+  backend: async () => JSON.stringify(claims),
+  model: "test-model",
+  cwd: workspaceDir,
+});
+```
+
 ### 3. `adapter.compress(prompt, opts) → Promise<string>`
 
 The distillation backend. You normally don't call this directly — `distill` does. Selectable via env.

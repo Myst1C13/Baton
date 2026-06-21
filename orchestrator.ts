@@ -49,6 +49,7 @@ import {
   CommandResult,
   HandoffPacket,
   HandoffTrigger,
+  RelayEvent,
 } from "./packages/shared";
 
 // ---------------------------------------------------------------------------
@@ -132,6 +133,7 @@ export class Orchestrator extends EventEmitter {
 
   /** Held while a switch runs so re-entrant triggers join it instead of racing. */
   private inFlight: Promise<LiveSession> | null = null;
+  private eventSequence = 0;
 
   constructor(opts: OrchestratorOptions) {
     super();
@@ -195,13 +197,18 @@ export class Orchestrator extends EventEmitter {
 
     this.inFlight = this.runSwitch(reason)
       .then((session) => {
-        this.phase = "running";
+        if (this.phase !== "stopped") this.phase = "running";
         return session;
       })
       .catch((err) => {
-        // The old session is still the source of truth on failure — stay on it.
-        this.phase = "running";
-        this.emitEvent("error", { phase: "switch", error: errMessage(err) });
+        if (this.phase !== "stopped") {
+          // The old session is still the source of truth on failure.
+          this.phase = "running";
+          this.emitEvent("handoff.failed", {
+            phase: "switch",
+            error: errMessage(err),
+          });
+        }
         throw err;
       })
       .finally(() => {
@@ -253,16 +260,18 @@ export class Orchestrator extends EventEmitter {
     this.current = null;
     this.phase = "stopped";
     this.emitEvent("session.completed", {});
+    this.currentTarget = null;
   }
 
   // --- the switch transaction --------------------------------------------
 
   private async runSwitch(reason: SwitchReason): Promise<LiveSession> {
     const from = this.currentTarget!;
+    const previous = this.current!;
 
     // 1. FREEZE — re-derive the workspace from git, the source of truth.
     const snapshot = captureWorkspace(this.workspaceDir);
-    this.emitEvent("frozen", {
+    this.emitEvent("workspace.frozen", {
       changedFiles: snapshot.changedFiles,
       churn: snapshot.stats.additions + snapshot.stats.deletions,
     });
@@ -271,7 +280,7 @@ export class Orchestrator extends EventEmitter {
     //    targetAgent names the real destination.
     const to = this.router.route(reason, { current: from, snapshot });
     this.adapterFor(to.provider); // validate the target is registered up front
-    this.emitEvent("routed", { from, to, reason });
+    this.emitEvent("agent.routed", { from, to, reason });
 
     // 3. COLLECT — fresh git facts + the runtime context we recorded live.
     const runtime: RuntimeContext = {
@@ -294,7 +303,7 @@ export class Orchestrator extends EventEmitter {
       trigger: toTrigger(reason),
       verificationCommand: this.verificationCommand,
       // The size being compressed — the live session's real token count.
-      sourceTokens: this.current?.usage().tokens ?? 0,
+      sourceTokens: previous.usage().tokens,
     };
     // Compress on a provider that is currently UP — never the one that just
     // failed (you can't ask a rate-limited provider to summarise its own 429).
@@ -303,7 +312,7 @@ export class Orchestrator extends EventEmitter {
       from,
       to
     );
-    this.emitEvent("distilling", {
+    this.emitEvent("handoff.distilling", {
       targetModel: to.model,
       compressProvider,
     });
@@ -323,18 +332,29 @@ export class Orchestrator extends EventEmitter {
     });
 
     // 6. LAUNCH — boot the fresh target seeded with the packet.
-    this.emitEvent("launching", { target: to });
+    this.emitEvent("agent.launching", { target: to });
     const next = await this.adapterFor(to.provider).launch({
       model: to.model,
       workspace: this.workspaceDir,
       manifestPath: this.handoffPath,
     });
 
+    // stop() may have been called while launch was in flight. Never resurrect
+    // a stopped orchestrator by adopting the newly-created session.
+    if (this.phase === "stopped") {
+      try {
+        next.stop();
+      } catch {
+        /* a session can fail while being cancelled */
+      }
+      throw new Error("Orchestrator stopped while a switch was in flight.");
+    }
+
     // 7. RESUME — only now retire the old session and adopt the new one. If
     //    launch had thrown above, we'd never have touched the still-live old
     //    session. A switch consumes the recorded runtime facts.
     try {
-      this.current?.stop();
+      previous.stop();
     } catch {
       /* old session already gone */
     }
@@ -395,6 +415,11 @@ export class Orchestrator extends EventEmitter {
     this.current = session;
     this.currentTarget = target;
     session.onError((e) => {
+      // Ignore delayed errors from a session that has already been replaced or
+      // stopped. Without this guard, an old provider can trigger a phantom
+      // second switch after a successful handoff.
+      if (this.phase === "stopped" || this.current !== session) return;
+
       // The engine's sessions surface structured signals ({ kind, detail }); a
       // raw Error is classified instead. Either way it's a switch trigger.
       const detail = signalDetail(e);
@@ -406,24 +431,23 @@ export class Orchestrator extends EventEmitter {
   }
 
   private emitEvent(type: string, payload: Record<string, unknown>): void {
-    this.emit("event", {
+    const parsedAgent = AgentId.safeParse(this.currentTarget?.provider);
+    const event = RelayEvent.parse({
+      id: `${this.sessionId}:${++this.eventSequence}`,
+      sessionId: this.sessionId,
       type,
-      provider: this.currentTarget?.provider,
       timestamp: new Date().toISOString(),
+      agent: parsedAgent.success ? parsedAgent.data : undefined,
       payload,
     });
+    this.emit("event", event);
   }
 }
 
 // Strongly-typed event channel (declaration merge over EventEmitter). Every
 // orchestrator emission is a single normalized `event` — the shape the Relay
 // timeline / Redis stream consumes.
-export interface OrchestratorEvent {
-  type: string;
-  provider?: string;
-  timestamp: string;
-  payload: Record<string, unknown>;
-}
+export type OrchestratorEvent = RelayEvent;
 export interface Orchestrator {
   on(event: "event", listener: (e: OrchestratorEvent) => void): this;
   emit(event: "event", e: OrchestratorEvent): boolean;

@@ -177,9 +177,9 @@ export const codexAdapter: ProviderAdapter = {
     if (!opts.manifestPath) {
       throw new Error("codexAdapter.launch requires opts.manifestPath (the handoff packet to resume from).");
     }
-    const packet = JSON.parse(
-      fs.readFileSync(opts.manifestPath, "utf-8")
-    ) as HandoffPacket;
+    const packet = HandoffPacket.parse(
+      JSON.parse(fs.readFileSync(opts.manifestPath, "utf-8"))
+    );
     const prompt = buildContinuationPrompt(packet);
 
     const child = spawn("codex", codexArgs(opts.model, opts.workspace, prompt), {

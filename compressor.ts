@@ -77,6 +77,13 @@ export interface PacketMeta {
   sourceTokens: number; // the live session's token count (for the metric)
 }
 
+/** Optional runtime overrides for embedding and deterministic tests. */
+export interface DistillOptions {
+  backend?: CompressBackend;
+  model?: string;
+  cwd?: string;
+}
+
 /** What the model is asked to produce — the reasoning subset of the packet. */
 const DistilledClaims = z.object({
   goal: z.string(),
@@ -323,11 +330,11 @@ export interface DistillOptions {
 export async function distill(
   evidence: EvidenceBundle,
   meta: PacketMeta,
-  opts: DistillOptions = {}
+  options: DistillOptions = {}
 ): Promise<HandoffPacket> {
-  const backend = opts.backend ?? COMPRESS_BACKEND;
-  const model = opts.model ?? COMPRESSOR_MODEL;
-  const cwd = opts.cwd ?? WORKSPACE_DIR;
+  const backend = options.backend ?? COMPRESS_BACKEND;
+  const model = options.model ?? COMPRESSOR_MODEL;
+  const cwd = options.cwd ?? WORKSPACE_DIR;
   try {
     const prompt = assemblePrompt(evidence);
     const raw = await backend(prompt, { model, cwd });
