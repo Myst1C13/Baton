@@ -172,6 +172,8 @@ function Rail({
   packet,
   bench,
   verifyLabel,
+  verifyEditable = false,
+  onVerifyChange,
 }: {
   phase: Phase;
   handoffDone: boolean;
@@ -185,6 +187,8 @@ function Rail({
   packet: HandoffPacket | null;
   bench: BenchRow[];
   verifyLabel: string;
+  verifyEditable?: boolean;
+  onVerifyChange?: (value: string) => void;
 }) {
   const isCodex = agentName ? agentName === "codex" : phase === "resumed";
   const agent = isCodex
@@ -252,32 +256,47 @@ function Rail({
 
         <div className="block verify">
           <small>VERIFICATION</small>
-          <div className="check">
-            <span
-              className={
-                migration === "pending" ? "pending" : migrationOk ? "ok" : "bad"
-              }
-            >
-              <Icon
-                name={
+          {verifyEditable ? (
+            <input
+              className="verify-input"
+              value={verifyLabel}
+              onChange={(event) => onVerifyChange?.(event.target.value)}
+              placeholder="verification command (e.g. npm test)"
+            />
+          ) : (
+            <div className="check">
+              <span
+                className={
                   migration === "pending"
-                    ? "spark"
+                    ? "pending"
                     : migrationOk
-                      ? "check"
-                      : "cross"
+                      ? "ok"
+                      : "bad"
                 }
-                size={12}
-              />
-            </span>
-            <code className="check-cmd">{verifyLabel}</code>
-            <b className={`check-state ${migration ?? (migrationOk ? "pass" : "fail")}`}>
-              {migration === "pending"
-                ? "pending"
-                : migrationOk
-                  ? "pass"
-                  : "fail"}
-            </b>
-          </div>
+              >
+                <Icon
+                  name={
+                    migration === "pending"
+                      ? "spark"
+                      : migrationOk
+                        ? "check"
+                        : "cross"
+                  }
+                  size={12}
+                />
+              </span>
+              <code className="check-cmd">{verifyLabel}</code>
+              <b
+                className={`check-state ${migration ?? (migrationOk ? "pass" : "fail")}`}
+              >
+                {migration === "pending"
+                  ? "pending"
+                  : migrationOk
+                    ? "pass"
+                    : "fail"}
+              </b>
+            </div>
+          )}
         </div>
 
         <details className="bench">
@@ -399,10 +418,9 @@ export function App() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(config.sessionId);
   const [wsBase] = useState(config.base);
   const [apiBase, setApiBase] = useState(config.api);
-  const [goal] = useState(demoPacket.task.goal);
+  const [task, setTask] = useState(demoPacket.task.goal);
   const [verificationCommand, setVerificationCommand] = useState("npm test");
   const [workspaceDir, setWorkspaceDir] = useState("demo-repo");
-  const [prompt] = useState("Fix the migration bug. Run the tests.");
   const [initialAgent, setInitialAgent] = useState<AgentId>("claude");
   const [claudeModel, setClaudeModel] = useState("claude-sonnet-4-6");
   const [codexModel, setCodexModel] = useState("gpt-5-codex");
@@ -452,7 +470,7 @@ export function App() {
 
   async function createSessionRequest(): Promise<string> {
     const sessionId = await createRelaySession(api, {
-        goal,
+        goal: task,
         verificationCommand,
         workspaceDir,
         initialAgent,
@@ -500,8 +518,9 @@ export function App() {
               claude: claudeModel,
               codex: codexModel,
             }),
-            prompt,
+            prompt: task,
             apiKey: keyFor(initialAgent),
+            apiKeys,
           }),
         }
       );
@@ -517,7 +536,7 @@ export function App() {
         initialAgent,
         target,
         models: { claude: claudeModel, codex: codexModel },
-        prompt,
+        prompt: task,
         apiKeys,
       });
       setControlMessage(`${target} running`);
@@ -546,6 +565,7 @@ export function App() {
   const bench = deriveBench(isLive ? events : demoEvents, packet);
   const selectedActiveAgent = isLive && events.length ? activeAgent(events) : initialAgent;
   const switchTarget = otherAgent(selectedActiveAgent);
+  const sessionComplete = isLive && events.some((event) => event.type === "session.completed");
   const hasNativePicker =
     typeof window !== "undefined" && Boolean(window.relay?.pickWorkspace);
   async function browseWorkspace(): Promise<void> {
@@ -556,6 +576,16 @@ export function App() {
     <div className="controls" aria-label="Session controls">
       {!isLive ? (
         <>
+          <label className="field">
+            <span>Task</span>
+            <textarea
+              value={task}
+              onChange={(event) => setTask(event.target.value)}
+              disabled={pendingAction !== null}
+              placeholder="What should the agent finish?"
+              rows={2}
+            />
+          </label>
           <label className="field">
             <span>Workspace</span>
             {hasNativePicker ? (
@@ -584,19 +614,6 @@ export function App() {
               />
             )}
           </label>
-          <div className="chips" role="group" aria-label="Workspace presets">
-            {["demo-repo", "."].map((preset) => (
-              <button
-                type="button"
-                key={preset}
-                className={`chip ${workspaceDir === preset ? "active" : ""}`}
-                onClick={() => setWorkspaceDir(preset)}
-                disabled={pendingAction !== null}
-              >
-                {preset === "." ? "repo root" : preset}
-              </button>
-            ))}
-          </div>
           <label className="field compact">
             <span>Start with</span>
             <select
@@ -613,7 +630,11 @@ export function App() {
           <button
             className="action primary"
             onClick={startNewSession}
-            disabled={pendingAction !== null}
+            disabled={
+              pendingAction !== null ||
+              task.trim().length === 0 ||
+              workspaceDir.trim().length === 0
+            }
           >
             {pendingAction?.startsWith("start") ? (
               <span className="spinner light" />
@@ -654,16 +675,6 @@ export function App() {
                 />
               </label>
               <label className="field">
-                <span>Verification</span>
-                <input
-                  value={verificationCommand}
-                  onChange={(event) =>
-                    setVerificationCommand(event.target.value)
-                  }
-                  disabled={pendingAction !== null}
-                />
-              </label>
-              <label className="field">
                 <span>Claude model</span>
                 <input
                   value={claudeModel}
@@ -693,14 +704,18 @@ export function App() {
             <button
               className="action primary"
               onClick={() => switchAgent(switchTarget)}
-              disabled={pendingAction !== null || phase === "switching"}
+              disabled={
+                pendingAction !== null || phase === "switching" || sessionComplete
+              }
             >
-              Switch to {agentLabel(switchTarget)}
+              {sessionComplete ? "Session complete" : `Switch to ${agentLabel(switchTarget)}`}
             </button>
             <button
               className="action"
               onClick={() => sessionAction("verify", "/verify")}
-              disabled={pendingAction !== null || phase === "switching"}
+              disabled={
+                pendingAction !== null || phase === "switching" || sessionComplete
+              }
             >
               Verify
             </button>
@@ -718,7 +733,7 @@ export function App() {
           <Terminal
             lines={lines}
             phase={phase}
-            interactive={isLive}
+            interactive={isLive && !sessionComplete}
             onInput={(text) =>
               sessionAction("input", "/input", { data: `${text}\n` })
             }
@@ -733,10 +748,12 @@ export function App() {
           migration={isLive ? migrationState(events) : undefined}
           sessionLabel={isLive ? `session ${currentSessionId}` : "new session"}
           controls={controls}
-          taskGoal={goal}
+          taskGoal={task}
           packet={packet}
           bench={bench}
           verifyLabel={verificationCommand}
+          verifyEditable={!isLive}
+          onVerifyChange={setVerificationCommand}
         />
       </div>
       {!config.railOnly && (

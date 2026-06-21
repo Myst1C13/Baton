@@ -36,11 +36,12 @@ function createWindow() {
     height: 760,
     minWidth: 320,
     title: "Relay",
-    alwaysOnTop: true,
     fullscreenable: false,
     webPreferences: { preload: path.join(__dirname, "preload.cjs") },
   });
-  win.setAlwaysOnTop(true, "floating");
+  // Normal window by default so it alt-tabs and never blocks other apps.
+  // Opt in to a floating companion with RELAY_ONTOP=1.
+  if (process.env.RELAY_ONTOP === "1") win.setAlwaysOnTop(true, "floating");
   place(win);
 
   const url = `${UI}/?rail=1&api=${encodeURIComponent(API)}&ws=${encodeURIComponent(WS)}`;
