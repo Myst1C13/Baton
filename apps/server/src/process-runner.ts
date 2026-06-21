@@ -17,10 +17,9 @@
  * `terminate()` that escalates SIGTERM → SIGKILL so a process can't be left
  * wedged. It is provider-agnostic; the Claude/Codex adapters are separate.
  *
- * NOTE: `process.started` / `process.exited` aren't in the shared
- * RELAY_EVENT_TYPES enum yet (`terminal.output` is). They validate because
- * `RelayEvent.type` is an open string; proposing their addition to the shared
- * enum is a follow-up for the contracts owner.
+ * `process.started`, `terminal.output`, and `process.exited` are all canonical
+ * shared event types, so downstream broadcasters, stores, and UIs can consume
+ * the lifecycle without provider-specific parsing.
  */
 
 import { spawn } from "node:child_process";

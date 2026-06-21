@@ -100,7 +100,8 @@ One normalized entry in the timeline.
 `type` is usually one of `RELAY_EVENT_TYPES`:
 
 ```
-session.started · agent.started · terminal.output · command.finished ·
+session.started · agent.started · process.started · terminal.output ·
+process.exited · command.finished ·
 file.changed · test.failed · limit.detected · handoff.started ·
 workspace.frozen · agent.routed · handoff.distilling · handoff.created ·
 agent.launching · agent.switched · switch.coalesced · handoff.failed ·

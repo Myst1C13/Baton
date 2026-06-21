@@ -135,6 +135,11 @@ test("orchestrator emits schema-valid events and ignores stale-session errors", 
       ["session-test:1", "session-test:2", "session-test:3"]
     );
     assert.ok(events.some((event) => event.type === "agent.switched"));
+    const handoff = events.find((event) => event.type === "handoff.created");
+    assert.equal(
+      (handoff?.payload.packet as { sessionId?: string } | undefined)?.sessionId,
+      "session-test"
+    );
 
     initial.emitError({ kind: "crash", detail: "late old-session error" });
     await new Promise((resolve) => setImmediate(resolve));

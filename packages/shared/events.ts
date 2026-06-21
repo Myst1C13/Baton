@@ -16,7 +16,9 @@ import { AgentId } from "./common";
 export const RELAY_EVENT_TYPES = [
   "session.started",
   "agent.started",
+  "process.started",
   "terminal.output",
+  "process.exited",
   "command.finished",
   "file.changed",
   "test.failed",
