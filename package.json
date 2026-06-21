@@ -3,9 +3,12 @@
   "version": "1.0.0",
   "description": "Provider-neutral AI coding-session handoff engine",
   "main": "index.js",
+  "workspaces": [
+    "apps/*"
+  ],
   "scripts": {
-    "test": "node --import tsx --test tests/*.test.ts && node --import tsx test-detection.ts",
-    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts && node --import tsx test-detection.ts && npm test --workspaces --if-present",
+    "typecheck": "tsc --noEmit && npm run typecheck --workspaces --if-present",
     "ui:dev": "vite --config ui/vite.config.ts",
     "ui:build": "tsc -p ui/tsconfig.json && vite build --config ui/vite.config.ts"
   },
