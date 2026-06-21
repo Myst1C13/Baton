@@ -12,17 +12,19 @@
 
 import * as http from "node:http";
 import type { Env } from "./env";
-import { notFound, toErrorResponse } from "./errors";
+import { methodNotAllowed, notFound, toErrorResponse } from "./errors";
 
 function sendJson(
   res: http.ServerResponse,
   statusCode: number,
-  body: unknown
+  body: unknown,
+  headers: Record<string, string> = {}
 ): void {
   const payload = JSON.stringify(body);
   res.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(payload),
+    ...headers,
   });
   res.end(payload);
 }
@@ -37,7 +39,9 @@ async function route(
   const { pathname } = new URL(req.url ?? "/", "http://localhost");
 
   if (pathname === "/health") {
-    if (req.method !== "GET") throw notFound(`No route for ${req.method} /health`);
+    if (req.method !== "GET") {
+      throw methodNotAllowed(["GET"], `${req.method} not allowed on /health`);
+    }
     sendJson(res, 200, {
       status: "ok",
       uptime: process.uptime(),
@@ -52,7 +56,7 @@ async function route(
 export function createApp(env: Env): http.Server {
   return http.createServer((req, res) => {
     route(req, res, env).catch((err) => {
-      const { statusCode, body, unexpected } = toErrorResponse(err);
+      const { statusCode, body, headers, unexpected } = toErrorResponse(err);
       if (unexpected) {
         // Log the real error server-side; clients only ever see the envelope.
         console.error("[relay:server] unhandled request error:", err);
@@ -61,7 +65,7 @@ export function createApp(env: Env): http.Server {
         res.end();
         return;
       }
-      sendJson(res, statusCode, body);
+      sendJson(res, statusCode, body, headers);
     });
   });
 }

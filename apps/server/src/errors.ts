@@ -15,7 +15,9 @@ export class HttpError extends Error {
   constructor(
     readonly statusCode: number,
     message: string,
-    readonly code: string = "error"
+    readonly code: string = "error",
+    /** Extra response headers to send alongside the error (e.g. `Allow`). */
+    readonly headers: Record<string, string> = {}
   ) {
     super(message);
     this.name = "HttpError";
@@ -25,25 +27,36 @@ export class HttpError extends Error {
 export const notFound = (message = "Not found"): HttpError =>
   new HttpError(404, message, "not_found");
 
-export const methodNotAllowed = (message = "Method not allowed"): HttpError =>
-  new HttpError(405, message, "method_not_allowed");
+/**
+ * 405 for a known resource hit with an unsupported method. Per RFC 9110 a 405
+ * response MUST carry an `Allow` header listing the methods the resource does
+ * support, so callers learn what to use instead.
+ */
+export const methodNotAllowed = (
+  allow: string[],
+  message = "Method not allowed"
+): HttpError =>
+  new HttpError(405, message, "method_not_allowed", { Allow: allow.join(", ") });
 
 /** Normalize any thrown value into the JSON envelope + status to send. */
 export function toErrorResponse(err: unknown): {
   statusCode: number;
   body: ErrorBody;
+  headers: Record<string, string>;
   unexpected: boolean;
 } {
   if (err instanceof HttpError) {
     return {
       statusCode: err.statusCode,
       body: { error: { code: err.code, message: err.message } },
+      headers: err.headers,
       unexpected: false,
     };
   }
   return {
     statusCode: 500,
     body: { error: { code: "internal_error", message: "Internal server error" } },
+    headers: {},
     unexpected: true,
   };
 }
