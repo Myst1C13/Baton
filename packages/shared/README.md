@@ -1,12 +1,18 @@
 # `@relay/shared` — Locked Contracts
 
-The single source of truth for the three data shapes that flow through RelayIDE.
+The single source of truth for the data shapes that flow through RelayIDE.
 **Everyone builds against these.** They are written in [Zod](https://zod.dev), so
 each export is both a runtime validator (`.parse()`) and a TypeScript type
 (`z.infer`) from one definition — no drift between compile-time and runtime.
 
 ```ts
-import { EvidenceBundle, HandoffPacket, RelayEvent, AgentId } from "@relay/shared";
+import {
+  EvidenceBundle,
+  HandoffPacket,
+  RelayEvent,
+  RelaySession,
+  AgentId,
+} from "@relay/shared";
 
 const packet = HandoffPacket.parse(rawJson); // throws if invalid; returns typed
 type Packet = import("@relay/shared").HandoffPacket; // the inferred TS type
@@ -31,6 +37,7 @@ every step also emits ──► RelayEvent ──► Redis timeline stream ─�
 | `EvidenceBundle` | RAW facts (git, commands, terminal, goal) | evidence-collector | distiller |
 | `HandoffPacket` | DISTILLED summary handed to the next agent | distiller | orchestrator → next adapter, UI |
 | `RelayEvent` | one timeline entry ("what happened") | every component | event-store (Redis), UI |
+| `RelaySession` | current session lifecycle and task configuration | server | runtime, API, UI |
 
 ---
 
@@ -100,7 +107,8 @@ One normalized entry in the timeline.
 `type` is usually one of `RELAY_EVENT_TYPES`:
 
 ```
-session.started · agent.started · terminal.output · command.finished ·
+session.started · agent.started · process.started · terminal.output ·
+process.exited · command.finished ·
 file.changed · test.failed · limit.detected · handoff.started ·
 workspace.frozen · agent.routed · handoff.distilling · handoff.created ·
 agent.launching · agent.switched · switch.coalesced · handoff.failed ·
@@ -108,6 +116,17 @@ test.passed · session.completed
 ```
 
 `limit.detected` is emitted when a trigger fires (context_full / rate_limit / crash).
+
+`RelayEventSink` is the shared function type used to connect adapters and process
+runners to broadcasters and persistence without importing either implementation.
+
+---
+
+## `RelaySession` (`session.ts`)
+
+The validated session shape returned by the API and consumed by the runtime and
+UI. `CreateSessionRequest` is the public POST body contract. The server keeps
+filesystem validation and state-transition behavior in its own domain layer.
 
 ---
 

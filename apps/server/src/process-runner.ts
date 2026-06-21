@@ -17,17 +17,19 @@
  * `terminate()` that escalates SIGTERM → SIGKILL so a process can't be left
  * wedged. It is provider-agnostic; the Claude/Codex adapters are separate.
  *
- * NOTE: `process.started` / `process.exited` aren't in the shared
- * RELAY_EVENT_TYPES enum yet (`terminal.output` is). They validate because
- * `RelayEvent.type` is an open string; proposing their addition to the shared
- * enum is a follow-up for the contracts owner.
+ * `process.started`, `terminal.output`, and `process.exited` are all canonical
+ * shared event types, so downstream broadcasters, stores, and UIs can consume
+ * the lifecycle without provider-specific parsing.
  */
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
-import { RelayEvent } from "../../../packages/shared/events";
-import { AgentId } from "../../../packages/shared/common";
+import {
+  RelayEvent,
+  type AgentId,
+  type RelayEventSink,
+} from "../../../packages/shared";
 
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024; // 1 MiB streamed per process
 const KILL_GRACE_MS = 3000; // SIGTERM → SIGKILL escalation window
@@ -54,8 +56,6 @@ export interface ProcessResult {
   truncated: boolean;
   durationMs: number;
 }
-
-export type RelayEventSink = (event: RelayEvent) => void;
 
 export interface RelayProcessHandle {
   readonly pid: number | undefined;

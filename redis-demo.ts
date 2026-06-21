@@ -78,7 +78,7 @@ async function main(): Promise<void> {
   // run a switch: claude → codex on a rate_limit
   orchestrator.start({ provider: "claude", model: "claude-opus-4-8" }, fakeSession("claude", "claude-opus-4-8"));
   await orchestrator.requestSwitch({ kind: "rate_limit" });
-  await new Promise((r) => setTimeout(r, 150)); // let fire-and-forget writes flush
+  await store.flush();
 
   // ---- SIMULATE A BROWSER REFRESH: rebuild everything from Redis ----
   console.log("\n=== 🔄 SIMULATED REFRESH — engine forgotten, rebuilding from Redis ===");
@@ -86,10 +86,10 @@ async function main(): Promise<void> {
   console.log("timeline (replayed from the Redis stream):");
   for (const e of timeline) console.log(`   ${e.id}  ${e.type}`);
   console.log("\nsession state (hash):", await store.getState());
-  const handoff = (await store.getHandoff()) as { goal?: string; metrics?: unknown } | null;
+  const handoff = await store.getHandoff();
   console.log(
     "handoff (key):  goal =",
-    JSON.stringify(handoff?.goal),
+    JSON.stringify(handoff?.task.goal),
     "| metrics =",
     JSON.stringify(handoff?.metrics)
   );

@@ -6,13 +6,28 @@
  * it never calls `.listen()` — `index.ts` (bootstrap) does that. This keeps the
  * app importable in tests, which bind it to an ephemeral port themselves.
  *
- * Only GET /health exists in this ticket. Sessions, WebSockets, and the process
- * runner attach to this server in later tickets.
+ * The app mounts health/session HTTP routes and the session-scoped WebSocket
+ * broadcaster. Runtime dependencies are exposed by `createAppRuntime()` so the
+ * coordinator and event store can be added without hidden singletons.
  */
 
 import * as http from "node:http";
 import type { Env } from "./env";
 import { methodNotAllowed, notFound, toErrorResponse } from "./errors";
+import { SessionBroadcaster } from "./broadcaster";
+import { SessionManager } from "./session-manager";
+import { createApiRouter, type ApiHandler } from "./routes";
+
+export interface AppOptions {
+  sessions?: SessionManager;
+  broadcaster?: SessionBroadcaster;
+}
+
+export interface AppRuntime {
+  server: http.Server;
+  sessions: SessionManager;
+  broadcaster: SessionBroadcaster;
+}
 
 function sendJson(
   res: http.ServerResponse,
@@ -33,7 +48,8 @@ function sendJson(
 async function route(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  _env: Env
+  _env: Env,
+  api: ApiHandler
 ): Promise<void> {
   // Parse just the pathname so query strings don't break exact matches.
   const { pathname } = new URL(req.url ?? "/", "http://localhost");
@@ -50,12 +66,24 @@ async function route(
     return;
   }
 
+  if (pathname.startsWith("/api/")) {
+    await api(req, res);
+    return;
+  }
+
   throw notFound(`No route for ${req.method} ${pathname}`);
 }
 
-export function createApp(env: Env): http.Server {
-  return http.createServer((req, res) => {
-    route(req, res, env).catch((err) => {
+export function createAppRuntime(
+  env: Env,
+  opts: AppOptions = {}
+): AppRuntime {
+  const sessions = opts.sessions ?? new SessionManager();
+  const broadcaster = opts.broadcaster ?? new SessionBroadcaster();
+  const api = createApiRouter({ sessions });
+
+  const server = http.createServer((req, res) => {
+    route(req, res, env, api).catch((err) => {
       const { statusCode, body, headers, unexpected } = toErrorResponse(err);
       if (unexpected) {
         // Log the real error server-side; clients only ever see the envelope.
@@ -68,4 +96,12 @@ export function createApp(env: Env): http.Server {
       sendJson(res, statusCode, body, headers);
     });
   });
+
+  broadcaster.attach(server);
+  return { server, sessions, broadcaster };
+}
+
+/** Compatibility helper for callers that only need the HTTP server. */
+export function createApp(env: Env, opts: AppOptions = {}): http.Server {
+  return createAppRuntime(env, opts).server;
 }

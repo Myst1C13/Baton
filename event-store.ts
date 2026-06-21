@@ -19,6 +19,11 @@
 
 import Redis from "ioredis";
 import { Orchestrator, OrchestratorEvent } from "./orchestrator";
+import {
+  HandoffPacket,
+  RelayEvent,
+  type HandoffPacket as HandoffPacketType,
+} from "./packages/shared";
 
 export interface EventStoreOptions {
   sessionId: string;
@@ -32,6 +37,7 @@ export class EventStore {
   private readonly redis: Redis;
   private readonly sessionId: string;
   private readonly maxTerminal: number;
+  private readonly pending = new Set<Promise<void>>();
 
   constructor(opts: EventStoreOptions) {
     this.sessionId = opts.sessionId;
@@ -53,14 +59,29 @@ export class EventStore {
   /** Subscribe to the orchestrator and persist every event it emits. */
   attach(orchestrator: Orchestrator): void {
     orchestrator.on("event", (event) => {
-      // Fire-and-forget: persistence must not block the switch transaction.
-      void this.record(event).catch((err) =>
-        console.warn(`[event-store] failed to persist ${event.type}: ${err.message}`)
-      );
+      this.enqueue(event);
     });
   }
 
+  private enqueue(event: OrchestratorEvent): void {
+    // Persistence stays off the switch critical path, but the store tracks each
+    // write so shutdown/tests can flush deterministically.
+    const write = this.record(event)
+      .catch((err) =>
+        console.warn(
+          `[event-store] failed to persist ${event.type}: ${err.message}`
+        )
+      )
+      .finally(() => this.pending.delete(write));
+    this.pending.add(write);
+  }
+
   private async record(event: OrchestratorEvent): Promise<void> {
+    if (event.sessionId !== this.sessionId) {
+      throw new Error(
+        `event session "${event.sessionId}" does not match store "${this.sessionId}"`
+      );
+    }
     const pipe = this.redis.pipeline();
 
     // 1. timeline — the replayable "what happened" log
@@ -76,7 +97,8 @@ export class EventStore {
 
     // 3. the handoff packet — the artifact that bridges old → new session
     if (event.type === "handoff.created") {
-      pipe.set(this.key("handoff"), JSON.stringify(event.payload));
+      const packet = HandoffPacket.parse(event.payload.packet);
+      pipe.set(this.key("handoff"), JSON.stringify(packet));
     }
 
     // 4. bounded terminal/timeline excerpts
@@ -96,7 +118,7 @@ export class EventStore {
    */
   async replay(): Promise<OrchestratorEvent[]> {
     const rows = await this.redis.xrange(this.key("events"), "-", "+");
-    return rows.map(([, fields]) => JSON.parse(fields[1]) as OrchestratorEvent);
+    return rows.map(([, fields]) => RelayEvent.parse(JSON.parse(fields[1])));
   }
 
   /** Current session state hash (for an instant load on connect). */
@@ -105,9 +127,9 @@ export class EventStore {
   }
 
   /** The latest persisted handoff packet, or null. */
-  async getHandoff(): Promise<unknown | null> {
+  async getHandoff(): Promise<HandoffPacketType | null> {
     const raw = await this.redis.get(this.key("handoff"));
-    return raw ? JSON.parse(raw) : null;
+    return raw ? HandoffPacket.parse(JSON.parse(raw)) : null;
   }
 
   /** Wipe this session's keys (useful between demo runs). */
@@ -120,7 +142,12 @@ export class EventStore {
     );
   }
 
+  async flush(): Promise<void> {
+    await Promise.all([...this.pending]);
+  }
+
   async close(): Promise<void> {
+    await this.flush();
     await this.redis.quit();
   }
 }

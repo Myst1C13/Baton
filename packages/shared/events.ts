@@ -16,7 +16,9 @@ import { AgentId } from "./common";
 export const RELAY_EVENT_TYPES = [
   "session.started",
   "agent.started",
+  "process.started",
   "terminal.output",
+  "process.exited",
   "command.finished",
   "file.changed",
   "test.failed",
@@ -44,3 +46,6 @@ export const RelayEvent = z.object({
   payload: z.record(z.string(), z.unknown()),
 });
 export type RelayEvent = z.infer<typeof RelayEvent>;
+
+/** Neutral event destination used by adapters, runners, broadcasters, and stores. */
+export type RelayEventSink = (event: RelayEvent) => void;

@@ -13,6 +13,37 @@ function s(payload: Record<string, unknown>, key: string): string | undefined {
   return typeof v === "string" || typeof v === "number" ? String(v) : undefined;
 }
 
+function provider(
+  payload: Record<string, unknown>,
+  key: string
+): "claude" | "codex" | undefined {
+  const value = payload[key];
+  if (value === "claude" || value === "codex") return value;
+  if (value && typeof value === "object" && "provider" in value) {
+    const id = (value as { provider?: unknown }).provider;
+    if (id === "claude" || id === "codex") return id;
+  }
+  return undefined;
+}
+
+function args(payload: Record<string, unknown>): string {
+  const value = payload.args;
+  return Array.isArray(value)
+    ? value.filter((part): part is string => typeof part === "string").join(" ")
+    : s(payload, "args") ?? "";
+}
+
+function metric(payload: Record<string, unknown>, key: string): number | undefined {
+  const direct = payload[key];
+  if (typeof direct === "number") return direct;
+  const metrics = payload.metrics;
+  if (metrics && typeof metrics === "object") {
+    const nested = (metrics as Record<string, unknown>)[key];
+    if (typeof nested === "number") return nested;
+  }
+  return undefined;
+}
+
 /** Render one RelayEvent as a terminal line. */
 export function eventLine(e: RelayEventT): Line {
   const p = e.payload;
@@ -24,7 +55,7 @@ export function eventLine(e: RelayEventT): Line {
     case "process.started":
       return {
         kind: "prompt",
-        value: `$ ${[s(p, "command"), s(p, "args")].filter(Boolean).join(" ") || "process"}`,
+        value: `$ ${[s(p, "command"), args(p)].filter(Boolean).join(" ") || "process"}`,
       };
     case "terminal.output": {
       // The process runner streams `{ stream, chunk }`; older sources use message/line.
@@ -70,22 +101,28 @@ export function eventLine(e: RelayEventT): Line {
         value: `↪ relay: workspace frozen · ${s(p, "changedFiles") ?? "?"} files`,
       };
     case "agent.routed":
-      return { kind: "relay", value: `↪ relay: routed → ${s(p, "to") ?? s(p, "provider") ?? "codex"}` };
+      return {
+        kind: "relay",
+        value: `↪ relay: routed → ${provider(p, "to") ?? s(p, "provider") ?? "codex"}`,
+      };
     case "handoff.distilling":
       return { kind: "relay", value: "↪ relay: distilling packet" };
     case "handoff.created": {
-      const pct = p.reductionPercent;
+      const pct = metric(p, "reductionPercent");
       return {
         kind: "relay",
         value: `↪ relay: packet ready${typeof pct === "number" ? ` · −${Math.round(pct)}%` : ""}`,
       };
     }
     case "agent.launching":
-      return { kind: "prompt", value: `$ ${s(p, "to") ?? "codex"} resume --packet` };
+      return {
+        kind: "prompt",
+        value: `$ ${provider(p, "target") ?? provider(p, "to") ?? "codex"} resume --packet`,
+      };
     case "agent.switched":
       return {
         kind: "relay",
-        value: `↪ relay: switched ${s(p, "from") ?? "claude"} → ${s(p, "to") ?? "codex"}`,
+        value: `↪ relay: switched ${provider(p, "from") ?? "claude"} → ${provider(p, "to") ?? "codex"}`,
       };
     case "session.completed":
       return { kind: "pass", value: "✔ session complete" };
@@ -129,7 +166,7 @@ export function activeAgent(events: RelayEventT[]): "claude" | "codex" {
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i]!;
     if (e.type === "agent.switched") {
-      const to = e.payload.to;
+      const to = provider(e.payload, "to");
       if (to === "codex" || to === "claude") return to;
     }
     if (e.agent === "codex" || e.agent === "claude") return e.agent;
