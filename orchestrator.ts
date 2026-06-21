@@ -37,6 +37,7 @@ import { captureWorkspace, WorkspaceSnapshot } from "./extract";
 import { collectEvidence, RuntimeContext } from "./evidence-collector";
 import { distill, PacketMeta } from "./compressor";
 import {
+  CompressBackend,
   LiveSession,
   ProviderAdapter,
   RouteTarget,
@@ -295,8 +296,18 @@ export class Orchestrator extends EventEmitter {
       // The size being compressed — the live session's real token count.
       sourceTokens: this.current?.usage().tokens ?? 0,
     };
-    this.emitEvent("distilling", { targetModel: to.model });
-    const packet = await distill(evidence, meta);
+    // Compress on a provider that is currently UP — never the one that just
+    // failed (you can't ask a rate-limited provider to summarise its own 429).
+    const { provider: compressProvider, backend } = this.pickCompressBackend(
+      reason,
+      from,
+      to
+    );
+    this.emitEvent("distilling", {
+      targetModel: to.model,
+      compressProvider,
+    });
+    const packet = await distill(evidence, meta, { backend });
     this.lastPacket = packet;
 
     // 5. PERSIST — the packet on disk is exactly what the adapter resumes from.
@@ -336,6 +347,37 @@ export class Orchestrator extends EventEmitter {
   }
 
   // --- helpers ------------------------------------------------------------
+
+  /**
+   * Choose which provider performs the compression. The rule: never the one
+   * that just failed. On a failure trigger (rate_limit / outage / crash) the
+   * current provider is down, so we exclude it and prefer the destination
+   * (which we just routed to and is therefore known-up). For benign triggers
+   * (context_full / manual / cost) nothing is down, so the destination is used
+   * uniformly. If somehow nothing is usable, we fall back to the destination
+   * anyway — `distill`'s deterministic fallback is the real safety net.
+   */
+  private pickCompressBackend(
+    reason: SwitchReason,
+    from: RouteTarget,
+    to: RouteTarget
+  ): { provider: string; backend: CompressBackend } {
+    const downProvider =
+      reason.kind === "rate_limit" ||
+      reason.kind === "outage" ||
+      reason.kind === "crash"
+        ? from.provider
+        : undefined;
+
+    const candidates = [to.provider, ...Array.from(this.adapters.keys())];
+    for (const provider of candidates) {
+      if (provider === downProvider) continue;
+      const adapter = this.adapters.get(provider);
+      if (adapter) return { provider, backend: adapter.compress };
+    }
+    const fb = this.adapterFor(to.provider);
+    return { provider: fb.provider, backend: fb.compress };
+  }
 
   private adapterFor(provider: string): ProviderAdapter {
     const adapter = this.adapters.get(provider);
@@ -496,7 +538,29 @@ if (require.main === module) {
 
   const makeFakeAdapter = (provider: string): ProviderAdapter => ({
     provider,
-    compress: async () => "{}", // unused in the demo (distill picks the backend)
+    // distill now routes through the PICKED backend, so the fake returns valid
+    // DistilledClaims and stamps which provider compressed — on a claude
+    // rate-limit you'll see this run on codex, proving the steering works.
+    compress: async () =>
+      JSON.stringify({
+        goal: "Make applyMigration idempotent and safe to re-run.",
+        acceptanceCriteria: ["Running applyMigration twice does not error"],
+        status: "blocked",
+        summary: `Distilled by ${provider}: the age column may be half-applied after the crash.`,
+        decisions: [
+          { text: "Guard with a schema check before ALTER", source: "agent" },
+        ],
+        constraints: ["migrations are append-only"],
+        nextActions: ["Add a PRAGMA table_info(users) check before ALTER TABLE"],
+        diffSummary: ["migrate.ts: added MigrationResult + signature change"],
+        pitfalls: [
+          "Do NOT re-run the migration blindly — the column may already exist",
+        ],
+        focusFiles: [
+          { path: "migrate.ts", role: "the file to fix", state: "missing the guard" },
+        ],
+        confidence: 0.9,
+      }),
     launch: async (opts) =>
       makeFakeSession(provider, opts.model || `${provider}-default`),
   });

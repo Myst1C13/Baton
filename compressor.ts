@@ -303,18 +303,34 @@ function buildFallbackPacket(ev: EvidenceBundle, meta: PacketMeta): HandoffPacke
 // Public API — the orchestrator calls this
 // ---------------------------------------------------------------------------
 
+/** Optional overrides for a single `distill` call. */
+export interface DistillOptions {
+  /**
+   * Override the compression backend. The orchestrator uses this to route
+   * compression to a provider that is currently UP — never the one that just
+   * rate-limited (you can't ask Claude to summarise its own 429). Defaults to
+   * the env-selected backend.
+   */
+  backend?: CompressBackend;
+  /** Override the compression model. Defaults to COMPRESSOR_MODEL. */
+  model?: string;
+  /** Working dir for the backend process. Defaults to WORKSPACE_DIR. */
+  cwd?: string;
+}
+
 /** Distill an EvidenceBundle into a validated HandoffPacket. Never throws —
  *  on any failure it returns a deterministic fallback packet. */
 export async function distill(
   evidence: EvidenceBundle,
-  meta: PacketMeta
+  meta: PacketMeta,
+  opts: DistillOptions = {}
 ): Promise<HandoffPacket> {
+  const backend = opts.backend ?? COMPRESS_BACKEND;
+  const model = opts.model ?? COMPRESSOR_MODEL;
+  const cwd = opts.cwd ?? WORKSPACE_DIR;
   try {
     const prompt = assemblePrompt(evidence);
-    const raw = await COMPRESS_BACKEND(prompt, {
-      model: COMPRESSOR_MODEL,
-      cwd: WORKSPACE_DIR,
-    });
+    const raw = await backend(prompt, { model, cwd });
     const claims = DistilledClaims.parse(extractJson(raw));
     return buildPacket(claims, evidence, meta);
   } catch (err) {
