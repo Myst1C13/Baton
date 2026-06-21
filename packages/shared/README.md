@@ -102,7 +102,9 @@ One normalized entry in the timeline.
 ```
 session.started · agent.started · terminal.output · command.finished ·
 file.changed · test.failed · limit.detected · handoff.started ·
-handoff.created · agent.switched · test.passed · session.completed
+workspace.frozen · agent.routed · handoff.distilling · handoff.created ·
+agent.launching · agent.switched · switch.coalesced · handoff.failed ·
+test.passed · session.completed
 ```
 
 `limit.detected` is emitted when a trigger fires (context_full / rate_limit / crash).

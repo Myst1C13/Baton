@@ -22,8 +22,14 @@ export const RELAY_EVENT_TYPES = [
   "test.failed",
   "limit.detected", // a trigger fired (context_full / rate_limit / crash)
   "handoff.started",
+  "workspace.frozen",
+  "agent.routed",
+  "handoff.distilling",
   "handoff.created",
+  "agent.launching",
   "agent.switched",
+  "switch.coalesced",
+  "handoff.failed",
   "test.passed",
   "session.completed",
 ] as const;
