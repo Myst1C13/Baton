@@ -293,7 +293,7 @@ Built at the UC Berkeley AI Hackathon, 2026, by:
 
 - **Syed Mohammad Husain** ([@Myst1C13](https://github.com/Myst1C13))
 - **Michael Lai** ([@Unieggy](https://github.com/Unieggy))
-- **James** ([@jduhking](https://github.com/jduhking))
+- **James Bodebiyi** ([@jduhking](https://github.com/jduhking))
 
 ## License
 
