@@ -1,27 +1,33 @@
-# Baton
+<p align="center">
+  <img src="docs/baton-logo.png" alt="Baton" width="180">
+</p>
 
-![Baton logo](docs/baton-logo.png)
+<h1 align="center">Baton</h1>
 
-[![CI](https://github.com/Myst1C13/Baton/actions/workflows/ci.yml/badge.svg)](https://github.com/Myst1C13/Baton/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%E2%89%A522-3c873a.svg)](package.json)
-[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6.svg)](tsconfig.json)
+<p align="center">
+  <strong>Evidence-backed handoffs between AI coding agents.</strong>
+</p>
 
-> Built at the UC Berkeley AI Hackathon, 2026.
+<p align="center">
+  <a href="https://github.com/Myst1C13/Baton/actions/workflows/ci.yml"><img src="https://github.com/Myst1C13/Baton/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License"></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/node-%E2%89%A522-3c873a.svg" alt="Node 22 or newer"></a>
+  <a href="tsconfig.json"><img src="https://img.shields.io/badge/TypeScript-strict-3178c6.svg" alt="TypeScript strict mode"></a>
+</p>
 
-**Baton compiles noisy agent work into the smallest verified state another coding tool needs to continue.**
+<p align="center"><em>Built at the UC Berkeley AI Hackathon, 2026.</em></p>
 
-When an AI coding agent hits a usage limit, crashes, or stalls mid-task, you
-normally have to re-explain everything to the next tool. Baton captures the
-unfinished work from *factual evidence* (git diff, test exit codes, terminal
-output), compiles a small portable **handoff packet**, launches a **different**
-agent in the same repository, and verifies whether it actually finished — the
-developer never re-explains the task.
+When an AI coding agent hits a usage limit, runs out of context, or crashes
+mid-task, the next tool usually starts cold. Baton rebuilds the unfinished task
+from evidence on disk — Git changes, command output, test results, and terminal
+history — and compiles it into a compact, validated **handoff packet**. A
+different agent resumes in the same repository, and Baton verifies the result
+by running the project's real verification command.
 
 Baton is not an editor or a Cursor clone. It transfers work *between* independent
 tools (Claude Code ⇄ Codex CLI) through a visible, provider-neutral manifest.
 
-![Baton demo — Claude stalls, Baton hands off to Codex, Verify confirms](docs/demo.gif)
+![Baton demo — Claude reaches a limit, Baton hands off to Codex, and verification passes](docs/demo.gif)
 
 *Claude Code hits a usage limit mid-fix → Baton compiles a verified handoff packet → Codex CLI resumes in the same repo → **Verify** runs the real tests and confirms the result.*
 
@@ -29,19 +35,17 @@ tools (Claude Code ⇄ Codex CLI) through a visible, provider-neutral manifest.
 
 ## Why Baton
 
-Today, an AI coding agent is a single point of failure. The moment it stops —
-usage limit, crash, network blip, or a provider-side outage — the context dies
-with the session. The developer becomes the recovery mechanism: re-reading the
-diff, reconstructing what the agent was attempting, and re-prompting a fresh tool
-from scratch. That re-explanation tax is paid every time, and it grows with the
-size of the change.
+Today, an AI coding agent is often a single point of failure. When a session
+stops, the developer becomes the recovery mechanism: re-reading the diff,
+reconstructing what the agent attempted, and prompting a fresh tool from
+scratch. That recovery cost grows with the size of the change.
 
 Baton removes the human from the recovery loop. It treats agent work as
 **portable state**, not a disposable chat session. The state is rebuilt from
 evidence the machine can verify — `git diff`, test exit codes, terminal output —
 rather than from an agent's self-report, which may be wrong or optimistic. That
-verified packet is small enough to hand to *any* compatible tool, so work
-survives the death of the agent that started it.
+validated packet can be handed to another compatible tool, so work can survive
+the session that started it.
 
 ## What works today
 
@@ -83,8 +87,19 @@ controls are roadmap work, not current guarantees.
 
 ## Quickstart
 
+### Requirements
+
+- Node.js 22 or newer
+- npm
+- Git
+
+No provider account or Redis installation is required for the deterministic
+demo.
+
 ```bash
-npm install
+git clone https://github.com/Myst1C13/Baton.git
+cd Baton
+npm ci
 npm run demo
 ```
 
@@ -217,6 +232,29 @@ the verification command from deterministic evidence. If model distillation
 fails or returns invalid JSON, Baton emits a deterministic fallback packet
 instead of abandoning the transfer.
 
+### What is in a handoff packet?
+
+Each packet is a versioned, Zod-validated contract containing:
+
+- the original goal and acceptance criteria;
+- source and target agents plus the handoff trigger;
+- current status, decisions, constraints, and next actions;
+- changed files, failed commands, exit codes, and a bounded failure summary;
+- focus files and pitfalls that help the next agent avoid repeating mistakes;
+- the verification command and context-reduction telemetry.
+
+The latest packet and its event timeline are stored in Redis when `REDIS_URL`
+is configured. Otherwise Baton uses the same storage interface in memory. Redis
+persists the handoff; the packet itself remains provider-neutral.
+
+### Context-reduction metric
+
+Baton compares the source-session context with the serialized handoff packet and
+reports the estimated reduction. The current implementation uses observed token
+usage when an adapter exposes it and a documented four-characters-per-token
+estimate for serialized packet content. This is directional telemetry, not yet
+a claim about total model cost or a benchmark across real-world sessions.
+
 The local control server binds to loopback only (`127.0.0.1`) and accepts
 browser/WebSocket traffic from the configured dashboard origin.
 
@@ -243,6 +281,19 @@ npm run typecheck
 npm run ui:build
 ```
 
+## Reproducible benchmark
+
+`npm run benchmark` runs six deterministic coding-failure fixtures through the
+same distiller used by Baton. It verifies schema validity and retention of the
+goal, acceptance criteria, changed files, command exit codes, latest failure,
+and verification command. One case deliberately takes the compression backend
+offline to exercise the deterministic fallback. The command writes both JSON
+and Markdown reports to `benchmarks/results/`.
+
+The report compares serialized evidence with the handoff payload using Baton's
+documented four-characters-per-token estimate. It intentionally does **not**
+claim model quality, provider cost, or end-to-end coding success.
+
 Redis is optional — set `REDIS_URL` for durable, refresh-surviving timelines;
 without it, an in-memory store with the same interface is used.
 
@@ -252,38 +303,13 @@ TypeScript · Node.js · React · Vite · Redis · WebSocket · Zod · Claude ·
 
 ## Roadmap
 
-**Near term**
-
-- Harden and benchmark authenticated `claude` + `codex` runs
-- Restore resumable session state across Baton server restarts
-- A reproducible benchmark with a measured no-Baton baseline for comparison
-- Controlled multi-hop handoffs (A → B → C, each transfer verified)
-- Signed desktop packaging and a user-configurable dock layout
-
-**Provider resilience**
-
-- Health-aware routing: detect rate limits / outages and fail over before a task
-  stalls, not after.
-- Pluggable adapters for more agents (additional CLIs and IDE agents) behind the
-  same provider-neutral contract.
-- Automatic retry-and-escalate: try a cheaper model, fall back to a stronger one
-  only when verification fails.
-
-**Team & enterprise**
-
-- Shared handoff packets so a transfer can move *between developers*, not just
-  between tools — pick up a teammate's in-flight agent work.
-- Centralized, signed audit log of every handoff and verification verdict for
-  compliance and review.
-- Policy controls: allowed providers, data-residency boundaries, and per-repo
-  verification commands enforced by the orchestrator.
-- Self-hosted / VPC deployment with SSO, so the control plane stays inside the
-  enterprise perimeter.
-
-**Verification**
-
-- Richer verdicts beyond a single exit code (per-test results, coverage deltas,
-  lint/type gates) attached to each packet.
+- Add an opt-in authenticated Claude Code/Codex end-to-end benchmark alongside
+  the deterministic regression benchmark.
+- Restore resumable process state across Baton server restarts.
+- Add controlled multi-hop handoffs with verification at every transfer.
+- Support more coding agents through the existing adapter contract.
+- Add richer verdicts such as per-test results, coverage deltas, and lint gates.
+- Add secret redaction and repository-level provider policies.
 
 ---
 
