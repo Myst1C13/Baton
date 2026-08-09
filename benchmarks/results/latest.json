@@ -1,0 +1,87 @@
+{
+  "benchmark": "baton-deterministic-handoff-v1",
+  "generatedAt": "2026-08-09T01:37:12.903Z",
+  "methodology": "Six synthetic, reproducible coding-failure fixtures compare serialized evidence with validated handoff packets. Fact retention checks goal, acceptance criteria, changed files, command exit codes, latest failure, and verification command. One fixture forces the model backend to fail.",
+  "summary": {
+    "cases": 6,
+    "fallbackCases": 1,
+    "schemaValidityPercent": 100,
+    "factRetentionPercent": 100,
+    "medianReductionPercent": 87.7,
+    "minimumReductionPercent": 87.4
+  },
+  "results": [
+    {
+      "name": "database-migration",
+      "usedFallback": false,
+      "schemaValid": true,
+      "factsPassed": 6,
+      "factsTotal": 6,
+      "factRetentionPercent": 100,
+      "sourceTokens": 2094,
+      "packetTokens": 263,
+      "reductionPercent": 87.4,
+      "durationMs": 1.26
+    },
+    {
+      "name": "websocket-reconnect",
+      "usedFallback": false,
+      "schemaValid": true,
+      "factsPassed": 6,
+      "factsTotal": 6,
+      "factRetentionPercent": 100,
+      "sourceTokens": 2147,
+      "packetTokens": 255,
+      "reductionPercent": 88.1,
+      "durationMs": 0.13
+    },
+    {
+      "name": "auth-boundary",
+      "usedFallback": false,
+      "schemaValid": true,
+      "factsPassed": 6,
+      "factsTotal": 6,
+      "factRetentionPercent": 100,
+      "sourceTokens": 2141,
+      "packetTokens": 264,
+      "reductionPercent": 87.7,
+      "durationMs": 0.07
+    },
+    {
+      "name": "cache-race",
+      "usedFallback": false,
+      "schemaValid": true,
+      "factsPassed": 6,
+      "factsTotal": 6,
+      "factRetentionPercent": 100,
+      "sourceTokens": 2140,
+      "packetTokens": 267,
+      "reductionPercent": 87.5,
+      "durationMs": 0.07
+    },
+    {
+      "name": "worker-crash",
+      "usedFallback": false,
+      "schemaValid": true,
+      "factsPassed": 6,
+      "factsTotal": 6,
+      "factRetentionPercent": 100,
+      "sourceTokens": 2165,
+      "packetTokens": 265,
+      "reductionPercent": 87.8,
+      "durationMs": 0.06
+    },
+    {
+      "name": "provider-outage-fallback",
+      "usedFallback": true,
+      "schemaValid": true,
+      "factsPassed": 6,
+      "factsTotal": 6,
+      "factRetentionPercent": 100,
+      "sourceTokens": 2187,
+      "packetTokens": 223,
+      "reductionPercent": 89.8,
+      "durationMs": 0.16
+    }
+  ]
+}
