@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "test": "node --import tsx --test tests/*.test.ts && node --import tsx test-detection.ts && npm run ws:test && npm test --workspaces --if-present",
+    "benchmark": "node --import tsx benchmarks/run.ts",
     "typecheck": "tsc --noEmit && npm run typecheck --workspaces --if-present",
     "ui:dev": "vite --config ui/vite.config.ts",
     "ui:build": "tsc -p ui/tsconfig.json && vite build --config ui/vite.config.ts",
