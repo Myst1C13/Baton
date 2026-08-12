@@ -165,9 +165,25 @@ The user never re-explains the task during the transfer.
 
 ## Screens
 
-| Ready | Handoff | Verified |
-| --- | --- | --- |
-| ![Baton ready](docs/devpost-1-ready.png) | ![Baton handoff](docs/devpost-2-handoff.png) | ![Baton verified](docs/devpost-3-verified.png) |
+### Ready
+
+Choose a workspace, verification command, and starting agent.
+
+![Baton ready to start a handoff session](docs/devpost-1-ready.png)
+
+### Handoff
+
+Baton freezes the workspace, validates the evidence packet, and resumes the
+next agent in the same repository.
+
+![Baton handing a failed task from Claude to Codex](docs/devpost-2-handoff.png)
+
+### Verified
+
+The receiving agent completes the fix and Baton runs the repository's real
+verification command.
+
+![Baton verification passing after the handoff](docs/devpost-3-verified.png)
 
 ## Architecture
 

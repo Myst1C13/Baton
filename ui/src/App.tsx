@@ -229,6 +229,9 @@ function Rail({
 
   // Verification: explicit override in live mode, else derived from phase.
   const migrationOk = migration ? migration === "pass" : phase === "resumed";
+  const reductionPercent = packet?.metrics.reductionPercent;
+  const hasMeasuredReduction =
+    typeof reductionPercent === "number" && reductionPercent > 0;
 
   return (
     <aside className="rail" aria-label="Baton">
@@ -299,7 +302,11 @@ function Rail({
               <Icon name="arrow" size={12} />{" "}
               {packet?.targetAgent === "claude" ? "Claude" : "Codex"}
             </span>
-            <b>−{Math.round(packet?.metrics.reductionPercent ?? 93)}%</b>
+            <b>
+              {hasMeasuredReduction
+                ? `${Math.round(reductionPercent)}% smaller`
+                : "packet validated"}
+            </b>
           </div>
           <div className="packet-meta">
             <span>

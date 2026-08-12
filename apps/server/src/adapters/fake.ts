@@ -101,7 +101,7 @@ export class FakeAgentAdapter implements AgentAdapter {
     if (opts.prompt) {
       this.emit("terminal.output", {
         stream: "stdout",
-        chunk: `fake received prompt: ${opts.prompt}\n`,
+        chunk: `demo agent received task: ${opts.prompt}\n`,
       });
     }
     // A synchronous event sink may request stop() while start() is emitting.
